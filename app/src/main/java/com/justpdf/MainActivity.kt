@@ -74,7 +74,7 @@ class MainActivity : AppCompatActivity() {
         tvPageCounter = findViewById(R.id.tvPageCounter)
         tvEmpty       = findViewById(R.id.tvEmpty)
 
-        recyclerView.layoutManager = LinearLayoutManager(this)
+        recyclerView.layoutManager = CenteringLayoutManager(this)
 
         btnShare.setOnClickListener { sharePdf() }
         btnOpenFile.setOnClickListener { openFilePicker() }
