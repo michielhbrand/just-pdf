@@ -30,6 +30,7 @@ import java.io.File
 class MainActivity : AppCompatActivity() {
 
     // ── Views ──────────────────────────────────────────────────────────────────
+    private lateinit var zoomLayout: ZoomLayout
     private lateinit var recyclerView: RecyclerView
     private lateinit var toolbar: LinearLayout
     private lateinit var btnShare: ImageButton
@@ -73,19 +74,20 @@ class MainActivity : AppCompatActivity() {
 
         setContentView(R.layout.activity_main)
 
-        recyclerView  = findViewById(R.id.recyclerView)
-        toolbar       = findViewById(R.id.toolbar)
-        btnShare      = findViewById(R.id.btnShare)
-        btnOpenFile   = findViewById(R.id.btnOpenFile)
+        zoomLayout   = findViewById(R.id.zoomLayout)
+        recyclerView = findViewById(R.id.recyclerView)
+        toolbar      = findViewById(R.id.toolbar)
+        btnShare     = findViewById(R.id.btnShare)
+        btnOpenFile  = findViewById(R.id.btnOpenFile)
         tvPageCounter = findViewById(R.id.tvPageCounter)
-        tvEmpty       = findViewById(R.id.tvEmpty)
+        tvEmpty      = findViewById(R.id.tvEmpty)
 
         recyclerView.layoutManager = LinearLayoutManager(this)
 
-        // Show toolbar (and temporarily restore nav bar) on tap
-        recyclerView.setOnTouchListener { _, event ->
+        // Show toolbar on tap anywhere on the zoom/scroll area
+        zoomLayout.setOnTouchListener { _, event ->
             if (event.action == MotionEvent.ACTION_UP) showToolbar()
-            false
+            false   // don't consume — let ZoomLayout handle it
         }
 
         btnShare.setOnClickListener { sharePdf() }
@@ -108,11 +110,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        // Re-apply immersive mode whenever the window regains focus
-        // (e.g. after a dialog or system overlay is dismissed).
-        if (hasFocus && currentFile != null) {
-            enterImmersiveMode()
-        }
+        if (hasFocus && currentFile != null) enterImmersiveMode()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -130,13 +128,6 @@ class MainActivity : AppCompatActivity() {
     // Immersive / navigation-bar hiding
     // ──────────────────────────────────────────────────────────────────────────
 
-    /**
-     * Hides the system navigation bar (and status bar) using the appropriate
-     * API for the running Android version.
-     *
-     * - API 30+: [WindowInsetsController] with BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-     * - API 21–29: legacy [View.SYSTEM_UI_FLAG_HIDE_NAVIGATION] + IMMERSIVE_STICKY
-     */
     private fun enterImmersiveMode() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             window.setDecorFitsSystemWindows(false)
@@ -158,7 +149,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** Temporarily restore system bars so the user can interact with the toolbar. */
     private fun exitImmersiveMode() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             window.insetsController?.show(WindowInsets.Type.systemBars())
@@ -222,6 +212,7 @@ class MainActivity : AppCompatActivity() {
         adapter = PdfPageAdapter(pdfRenderer!!, pageCount)
         recyclerView.adapter = adapter
         updatePageCounter(0, pageCount)
+        zoomLayout.resetZoom()
         showToolbar()
         enterImmersiveMode()
     }
@@ -242,7 +233,6 @@ class MainActivity : AppCompatActivity() {
         toolbar.animate().cancel()
         toolbar.alpha = 1f
         toolbar.visibility = View.VISIBLE
-        // Temporarily show nav bar so the user can interact with the toolbar
         if (currentFile != null) exitImmersiveMode()
         scheduleHideToolbar()
     }
@@ -253,7 +243,6 @@ class MainActivity : AppCompatActivity() {
             .setDuration(300)
             .withEndAction {
                 toolbar.visibility = View.GONE
-                // Re-enter immersive mode once toolbar is gone
                 if (currentFile != null) enterImmersiveMode()
             }
             .start()
@@ -307,17 +296,14 @@ class MainActivity : AppCompatActivity() {
         private val pageCount: Int
     ) : RecyclerView.Adapter<PdfPageAdapter.PageViewHolder>() {
 
-        inner class PageViewHolder(
-            val zoomLayout: ZoomLayout,
-            val imageView: ImageView
-        ) : RecyclerView.ViewHolder(zoomLayout)
+        inner class PageViewHolder(val imageView: ImageView) :
+            RecyclerView.ViewHolder(imageView)
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): PageViewHolder {
-            val zoomLayout = layoutInflater.inflate(
+            val imageView = layoutInflater.inflate(
                 R.layout.item_pdf_page, parent, false
-            ) as ZoomLayout
-            val imageView = zoomLayout.findViewById<ImageView>(R.id.pageImage)
-            return PageViewHolder(zoomLayout, imageView)
+            ) as ImageView
+            return PageViewHolder(imageView)
         }
 
         override fun onBindViewHolder(holder: PageViewHolder, position: Int) {
@@ -328,7 +314,6 @@ class MainActivity : AppCompatActivity() {
             val bitmapHeight = (page.height * scale).toInt()
 
             val bitmap = Bitmap.createBitmap(bitmapWidth, bitmapHeight, Bitmap.Config.ARGB_8888)
-            // White background (PdfRenderer renders transparent by default)
             bitmap.eraseColor(android.graphics.Color.WHITE)
             page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
             page.close()

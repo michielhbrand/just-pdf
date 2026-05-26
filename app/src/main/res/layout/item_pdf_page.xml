@@ -1,21 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!--
-    Single PDF page item in the RecyclerView list.
-    ZoomLayout provides pinch-to-zoom (1×–5×) and pan gestures.
-    Double-tap resets to 1×.
--->
-<com.justpdf.ZoomLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<!-- Single PDF page item in the RecyclerView list -->
+<ImageView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/pageImage"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:clipChildren="true"
-    android:clipToPadding="true">
-
-    <ImageView
-        android:id="@+id/pageImage"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:adjustViewBounds="true"
-        android:background="@android:color/white"
-        android:scaleType="fitCenter" />
-
-</com.justpdf.ZoomLayout>
+    android:adjustViewBounds="true"
+    android:background="@android:color/white"
+    android:scaleType="fitCenter" />

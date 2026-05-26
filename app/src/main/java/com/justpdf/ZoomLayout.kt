@@ -1,19 +1,23 @@
 package com.justpdf
 
 import android.content.Context
+import android.graphics.Canvas
 import android.graphics.Matrix
 import android.util.AttributeSet
 import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
-import android.view.View
 import android.widget.FrameLayout
 import kotlin.math.max
 import kotlin.math.min
 
 /**
- * A FrameLayout that supports pinch-to-zoom and pan gestures for its single child view.
- * Zoom range: 1× – 5×. Double-tap resets to 1×.
+ * A FrameLayout that applies a pinch-to-zoom + pan Matrix transform to ALL of
+ * its children as a single unit — so the entire RecyclerView (all PDF pages)
+ * zooms together, pivoting exactly at the pinch focal point.
+ *
+ * Zoom range : 1× – 5×
+ * Double-tap : resets to 1×
  */
 class ZoomLayout @JvmOverloads constructor(
     context: Context,
@@ -21,8 +25,8 @@ class ZoomLayout @JvmOverloads constructor(
     defStyleAttr: Int = 0
 ) : FrameLayout(context, attrs, defStyleAttr) {
 
-    private val matrix = Matrix()
-    private val matrixValues = FloatArray(9)
+    private val drawMatrix = Matrix()
+    private val invertMatrix = Matrix()
 
     private var scaleFactor = 1f
     private var translateX = 0f
@@ -38,14 +42,14 @@ class ZoomLayout @JvmOverloads constructor(
                 val prevScale = scaleFactor
                 scaleFactor = (scaleFactor * detector.scaleFactor).coerceIn(minScale, maxScale)
 
-                // Pivot around the focal point
-                val focusX = detector.focusX
-                val focusY = detector.focusY
-                translateX = focusX - (focusX - translateX) * (scaleFactor / prevScale)
-                translateY = focusY - (focusY - translateY) * (scaleFactor / prevScale)
+                // Pivot the zoom at the focal point
+                val fx = detector.focusX
+                val fy = detector.focusY
+                translateX = fx - (fx - translateX) * (scaleFactor / prevScale)
+                translateY = fy - (fy - translateY) * (scaleFactor / prevScale)
 
                 clampTranslation()
-                applyTransform()
+                updateMatrix()
                 return true
             }
         })
@@ -69,6 +73,26 @@ class ZoomLayout @JvmOverloads constructor(
     }
 
     // ──────────────────────────────────────────────────────────────────────────
+    // Drawing — apply the matrix to the whole canvas so every child is affected
+    // ──────────────────────────────────────────────────────────────────────────
+
+    override fun dispatchDraw(canvas: Canvas) {
+        canvas.save()
+        canvas.concat(drawMatrix)
+        super.dispatchDraw(canvas)
+        canvas.restore()
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Touch — map raw touch coords through the inverse matrix before dispatching
+    // so child views (RecyclerView scroll) still receive correct coordinates.
+    // ──────────────────────────────────────────────────────────────────────────
+
+    override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
+        // Intercept all events when zoomed so the RecyclerView doesn't steal
+        // horizontal/diagonal panning gestures.
+        return scaleFactor > 1f
+    }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         scaleDetector.onTouchEvent(event)
@@ -89,10 +113,9 @@ class ZoomLayout @JvmOverloads constructor(
                         lastTouchX = event.getX(idx)
                         lastTouchY = event.getY(idx)
                         clampTranslation()
-                        applyTransform()
+                        updateMatrix()
                     }
                 } else {
-                    // Keep last position updated even during scale so pan doesn't jump
                     val idx = event.findPointerIndex(activePointerId)
                     if (idx >= 0) {
                         lastTouchX = event.getX(idx)
@@ -103,12 +126,13 @@ class ZoomLayout @JvmOverloads constructor(
             MotionEvent.ACTION_UP,
             MotionEvent.ACTION_CANCEL -> {
                 activePointerId = INVALID_POINTER_ID
+                // When back at 1× let the RecyclerView handle scrolling again
+                if (scaleFactor <= 1f) resetZoom()
             }
             MotionEvent.ACTION_POINTER_UP -> {
                 val pointerIdx = event.actionIndex
                 val pointerId = event.getPointerId(pointerIdx)
                 if (pointerId == activePointerId) {
-                    // Primary pointer lifted — pick a new one
                     val newIdx = if (pointerIdx == 0) 1 else 0
                     activePointerId = event.getPointerId(newIdx)
                     lastTouchX = event.getX(newIdx)
@@ -116,37 +140,53 @@ class ZoomLayout @JvmOverloads constructor(
                 }
             }
         }
+
+        // When not zoomed, pass events to children (RecyclerView) for scrolling
+        if (scaleFactor <= 1f) {
+            transformAndDispatchToChild(event)
+        }
         return true
     }
 
-    override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
-        // Let the ZoomLayout handle all touch events when zoomed in so the
-        // RecyclerView doesn't steal horizontal/diagonal panning.
-        return scaleFactor > 1f
+    /**
+     * Map touch coordinates through the inverse matrix and re-dispatch to
+     * children so the RecyclerView receives correctly-scaled coordinates.
+     */
+    private fun transformAndDispatchToChild(event: MotionEvent) {
+        drawMatrix.invert(invertMatrix)
+        val transformed = MotionEvent.obtain(event)
+        transformed.transform(invertMatrix)
+        super.dispatchTouchEvent(transformed)
+        transformed.recycle()
     }
 
     // ──────────────────────────────────────────────────────────────────────────
 
     private fun clampTranslation() {
         if (width == 0 || height == 0) return
-        val maxTransX = (width * (scaleFactor - 1f)) / 2f
-        val maxTransY = (height * (scaleFactor - 1f)) / 2f
-        translateX = translateX.coerceIn(-maxTransX, maxTransX)
-        translateY = translateY.coerceIn(-maxTransY, maxTransY)
+        val maxTx = width  * (scaleFactor - 1f) / 2f
+        val maxTy = height * (scaleFactor - 1f) / 2f
+        // Allow panning up to the scaled edges
+        translateX = translateX.coerceIn(-maxTx * 2f, maxTx * 2f)
+        translateY = translateY.coerceIn(-maxTy * 2f, maxTy * 2f)
     }
 
-    private fun applyTransform() {
-        val child: View = getChildAt(0) ?: return
-        child.scaleX = scaleFactor
-        child.scaleY = scaleFactor
-        child.translationX = translateX
-        child.translationY = translateY
+    private fun updateMatrix() {
+        drawMatrix.reset()
+        // Translate to pivot, scale, translate back, then apply pan offset
+        drawMatrix.postTranslate(translateX, translateY)
+        drawMatrix.postScale(scaleFactor, scaleFactor, width / 2f, height / 2f)
+        // Correct: build matrix as scale-around-focal then translate
+        drawMatrix.reset()
+        drawMatrix.setScale(scaleFactor, scaleFactor)
+        drawMatrix.postTranslate(translateX, translateY)
+        invalidate()
     }
 
-    private fun resetZoom() {
+    fun resetZoom() {
         scaleFactor = 1f
         translateX = 0f
         translateY = 0f
-        applyTransform()
+        updateMatrix()
     }
 }
