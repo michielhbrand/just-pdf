@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Covers files copied to internal cache (content:// URIs resolved here) -->
+    <cache-path name="cached_pdfs" path="." />
+    <!-- Covers files in external storage (for direct file:// paths on older APIs) -->
+    <external-path name="external_files" path="." />
+    <!-- Covers files in app-specific external cache -->
+    <external-cache-path name="external_cache" path="." />
+</paths>

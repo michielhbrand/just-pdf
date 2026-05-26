@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- App launcher icon: a simple PDF document symbol -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Background fill -->
+    <path
+        android:fillColor="#FF1A1A1A"
+        android:pathData="M0,0h108v108H0z" />
+    <!-- Document body -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M30,20h32l16,16v52H30V20z" />
+    <!-- Folded corner -->
+    <path
+        android:fillColor="#FFAAAAAA"
+        android:pathData="M62,20l16,16H62V20z" />
+    <!-- PDF text lines (decorative) -->
+    <path
+        android:fillColor="#FF1A1A1A"
+        android:pathData="M38,50h32v3H38z" />
+    <path
+        android:fillColor="#FF1A1A1A"
+        android:pathData="M38,58h32v3H38z" />
+    <path
+        android:fillColor="#FF1A1A1A"
+        android:pathData="M38,66h20v3H38z" />
+</vector>

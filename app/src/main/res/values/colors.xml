@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="toolbar_background">#CC000000</color>
+    <color name="toolbar_icon_tint">#FFFFFFFF</color>
+    <color name="page_counter_text">#FFFFFFFF</color>
+    <color name="background">#FF1A1A1A</color>
+</resources>
