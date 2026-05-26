@@ -7,10 +7,7 @@ import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
 import android.os.ParcelFileDescriptor
-import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
@@ -44,11 +41,6 @@ class MainActivity : AppCompatActivity() {
     private var pdfDescriptor: ParcelFileDescriptor? = null
     private var adapter: PdfPageAdapter? = null
 
-    // ── Toolbar auto-hide ──────────────────────────────────────────────────────
-    private val toolbarHandler = Handler(Looper.getMainLooper())
-    private val hideToolbarRunnable = Runnable { hideToolbar() }
-    private val TOOLBAR_HIDE_DELAY_MS = 3_000L
-
     // ── File picker launcher ───────────────────────────────────────────────────
     private val openFileLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -74,21 +66,15 @@ class MainActivity : AppCompatActivity() {
 
         setContentView(R.layout.activity_main)
 
-        zoomLayout   = findViewById(R.id.zoomLayout)
-        recyclerView = findViewById(R.id.recyclerView)
-        toolbar      = findViewById(R.id.toolbar)
-        btnShare     = findViewById(R.id.btnShare)
-        btnOpenFile  = findViewById(R.id.btnOpenFile)
+        zoomLayout    = findViewById(R.id.zoomLayout)
+        recyclerView  = findViewById(R.id.recyclerView)
+        toolbar       = findViewById(R.id.toolbar)
+        btnShare      = findViewById(R.id.btnShare)
+        btnOpenFile   = findViewById(R.id.btnOpenFile)
         tvPageCounter = findViewById(R.id.tvPageCounter)
-        tvEmpty      = findViewById(R.id.tvEmpty)
+        tvEmpty       = findViewById(R.id.tvEmpty)
 
         recyclerView.layoutManager = LinearLayoutManager(this)
-
-        // Show toolbar on tap anywhere on the zoom/scroll area
-        zoomLayout.setOnTouchListener { _, event ->
-            if (event.action == MotionEvent.ACTION_UP) showToolbar()
-            false   // don't consume — let ZoomLayout handle it
-        }
 
         btnShare.setOnClickListener { sharePdf() }
         btnOpenFile.setOnClickListener { openFilePicker() }
@@ -110,6 +96,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
+        // Re-apply immersive mode whenever the window regains focus
+        // (e.g. after a dialog or system overlay is dismissed).
         if (hasFocus && currentFile != null) enterImmersiveMode()
     }
 
@@ -120,7 +108,6 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        toolbarHandler.removeCallbacks(hideToolbarRunnable)
         closePdfRenderer()
     }
 
@@ -128,6 +115,13 @@ class MainActivity : AppCompatActivity() {
     // Immersive / navigation-bar hiding
     // ──────────────────────────────────────────────────────────────────────────
 
+    /**
+     * Hides the system navigation bar (and status bar) using the appropriate
+     * API for the running Android version.
+     *
+     * - API 30+: [WindowInsetsController] with BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+     * - API 21–29: legacy SYSTEM_UI_FLAG_HIDE_NAVIGATION + IMMERSIVE_STICKY
+     */
     private fun enterImmersiveMode() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             window.setDecorFitsSystemWindows(false)
@@ -145,19 +139,6 @@ class MainActivity : AppCompatActivity() {
                     or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
                     or View.SYSTEM_UI_FLAG_FULLSCREEN
                     or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-            )
-        }
-    }
-
-    private fun exitImmersiveMode() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            window.insetsController?.show(WindowInsets.Type.systemBars())
-        } else {
-            @Suppress("DEPRECATION")
-            window.decorView.systemUiVisibility = (
-                View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                    or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                    or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
             )
         }
     }
@@ -213,7 +194,6 @@ class MainActivity : AppCompatActivity() {
         recyclerView.adapter = adapter
         updatePageCounter(0, pageCount)
         zoomLayout.resetZoom()
-        showToolbar()
         enterImmersiveMode()
     }
 
@@ -225,33 +205,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     // ──────────────────────────────────────────────────────────────────────────
-    // Toolbar
+    // Toolbar — always visible, never hides
     // ──────────────────────────────────────────────────────────────────────────
-
-    private fun showToolbar() {
-        toolbarHandler.removeCallbacks(hideToolbarRunnable)
-        toolbar.animate().cancel()
-        toolbar.alpha = 1f
-        toolbar.visibility = View.VISIBLE
-        if (currentFile != null) exitImmersiveMode()
-        scheduleHideToolbar()
-    }
-
-    private fun hideToolbar() {
-        toolbar.animate()
-            .alpha(0f)
-            .setDuration(300)
-            .withEndAction {
-                toolbar.visibility = View.GONE
-                if (currentFile != null) enterImmersiveMode()
-            }
-            .start()
-    }
-
-    private fun scheduleHideToolbar() {
-        toolbarHandler.removeCallbacks(hideToolbarRunnable)
-        toolbarHandler.postDelayed(hideToolbarRunnable, TOOLBAR_HIDE_DELAY_MS)
-    }
 
     private fun updatePageCounter(page: Int, pageCount: Int) {
         tvPageCounter.text = getString(R.string.page_counter, page + 1, pageCount)
