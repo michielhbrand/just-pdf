@@ -7,24 +7,29 @@
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
 
-  html {
+  html, body {
     background: #1a1a1a;
-    /* Allow WebView text selection */
+    width: 100%;
+    /* IMPORTANT: fixed height so flexbox centering works */
+    height: 100%;
     -webkit-user-select: text;
     user-select: text;
   }
 
-  body {
-    background: #1a1a1a;
-    width: 100%;
-    min-height: 100vh;
+  /*
+   * Outer wrapper: full viewport height, centres #container vertically
+   * when content is shorter than the screen (single-page PDFs).
+   * When content is taller, it simply grows and scrolls normally.
+   */
+  #outer {
+    min-height: 100%;
     display: flex;
     flex-direction: column;
     align-items: center;
-    /* Centre content vertically when shorter than the viewport */
     justify-content: center;
   }
 
+  /* Inner container holds the page wrappers */
   #container {
     display: flex;
     flex-direction: column;
@@ -39,14 +44,13 @@
     margin: 4px 0;
     background: white;
     box-shadow: 0 2px 8px rgba(0,0,0,0.5);
-    /* Clip text layer to page bounds */
     overflow: hidden;
   }
 
-  /* Canvas sits behind the text layer */
+  /* Canvas sits behind the text layer — pointer-events:none so touches
+     pass through to the selectable text layer above it */
   .page-wrapper canvas {
     display: block;
-    /* IMPORTANT: pointer-events none so touches reach the text layer */
     pointer-events: none;
   }
 
@@ -59,12 +63,12 @@
     bottom: 0;
     overflow: hidden;
     line-height: 1;
-    /* z-index above canvas so it receives touch events */
     z-index: 2;
-    /* Enable text selection */
+    pointer-events: auto;
     -webkit-user-select: text;
     user-select: text;
-    pointer-events: auto;
+    /* Prevent callout popup from blocking selection start */
+    -webkit-touch-callout: default;
   }
 
   .textLayer span,
@@ -74,19 +78,17 @@
     white-space: pre;
     cursor: text;
     transform-origin: 0% 0%;
-    /* Each span must also be selectable */
     -webkit-user-select: text;
     user-select: text;
   }
 
-  /* Highlight selected text */
   .textLayer span::selection,
   .textLayer ::selection {
     background: rgba(0, 120, 255, 0.35);
     color: transparent;
   }
 
-  /* ── Loading indicator ── */
+  /* ── Loading / error ── */
   #loading {
     color: #aaa;
     font-family: sans-serif;
@@ -94,8 +96,6 @@
     padding: 40px;
     text-align: center;
   }
-
-  /* ── Error message ── */
   #error {
     display: none;
     color: #ff6b6b;
@@ -107,20 +107,26 @@
 </style>
 </head>
 <body>
-<div id="loading">Loading…</div>
-<div id="error"></div>
-<div id="container"></div>
+<div id="outer">
+  <div id="loading">Loading…</div>
+  <div id="error"></div>
+  <div id="container"></div>
+</div>
 
 <script type="module">
   import * as pdfjsLib from './pdf.mjs';
-
   pdfjsLib.GlobalWorkerOptions.workerSrc = './pdf.worker.mjs';
 
+  const outer     = document.getElementById('outer');
   const container = document.getElementById('container');
   const loadingEl = document.getElementById('loading');
   const errorEl   = document.getElementById('error');
 
   window.loadPdf = async function(fileUrl) {
+    // Reset scroll and zoom before loading new document
+    window.scrollTo(0, 0);
+    document.documentElement.style.zoom = '';
+
     loadingEl.style.display = 'block';
     errorEl.style.display   = 'none';
     container.innerHTML     = '';
@@ -134,14 +140,13 @@
 
       loadingEl.style.display = 'none';
 
-      const devicePixelRatio = window.devicePixelRatio || 1;
-      const viewportWidth    = window.innerWidth;
+      const dpr           = window.devicePixelRatio || 1;
+      const viewportWidth = window.innerWidth;
 
       for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
         const page     = await pdf.getPage(pageNum);
         const viewport = page.getViewport({ scale: 1 });
 
-        // Scale so the page fills the screen width exactly
         const scale          = viewportWidth / viewport.width;
         const scaledViewport = page.getViewport({ scale });
 
@@ -152,24 +157,24 @@
         wrapper.style.height = scaledViewport.height + 'px';
 
         // ── Canvas (hi-DPI) ──
-        const canvas  = document.createElement('canvas');
-        const ctx     = canvas.getContext('2d');
-        canvas.width  = Math.floor(scaledViewport.width  * devicePixelRatio);
-        canvas.height = Math.floor(scaledViewport.height * devicePixelRatio);
+        const canvas = document.createElement('canvas');
+        const ctx    = canvas.getContext('2d');
+        canvas.width  = Math.floor(scaledViewport.width  * dpr);
+        canvas.height = Math.floor(scaledViewport.height * dpr);
         canvas.style.width  = scaledViewport.width  + 'px';
         canvas.style.height = scaledViewport.height + 'px';
 
-        const hiDpiViewport = page.getViewport({ scale: scale * devicePixelRatio });
-        await page.render({ canvasContext: ctx, viewport: hiDpiViewport }).promise;
+        await page.render({
+          canvasContext: ctx,
+          viewport: page.getViewport({ scale: scale * dpr }),
+        }).promise;
 
         // ── Text layer ──
         const textLayerDiv = document.createElement('div');
         textLayerDiv.className = 'textLayer';
 
         const textContent = await page.getTextContent();
-
-        // pdf.js v4 TextLayer API
-        const textLayer = new pdfjsLib.TextLayer({
+        const textLayer   = new pdfjsLib.TextLayer({
           textContentSource: textContent,
           container: textLayerDiv,
           viewport: scaledViewport,
@@ -181,25 +186,18 @@
         container.appendChild(wrapper);
       }
 
-      // Notify Android of the page count
-      if (window.Android) {
-        window.Android.onPdfLoaded(pdf.numPages);
-      }
+      if (window.Android) window.Android.onPdfLoaded(pdf.numPages);
+
     } catch (err) {
       loadingEl.style.display = 'none';
       errorEl.style.display   = 'block';
       errorEl.textContent     = 'Could not open PDF: ' + err.message;
       console.error(err);
-      if (window.Android) {
-        window.Android.onPdfError(err.message || String(err));
-      }
+      if (window.Android) window.Android.onPdfError(err.message || String(err));
     }
   };
 
-  // Signal to Android that the viewer is ready
-  if (window.Android) {
-    window.Android.onViewerReady();
-  }
+  if (window.Android) window.Android.onViewerReady();
 </script>
 </body>
 </html>

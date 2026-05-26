@@ -115,6 +115,10 @@ class MainActivity : AppCompatActivity() {
             cacheMode = WebSettings.LOAD_NO_CACHE
         }
 
+        // Do NOT let the WebView consume long-press — HTML text selection needs it
+        webView.isLongClickable = false
+        webView.setOnLongClickListener { false }
+
         // Expose Android bridge to JavaScript
         webView.addJavascriptInterface(PdfJsBridge(), "Android")
 
@@ -252,6 +256,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun loadPdfFromFile(file: File) {
         currentFile = file
+        // Reset zoom to 100% and scroll to top before loading new document
+        webView.setInitialScale(0)
+        webView.scrollTo(0, 0)
         val fileUrl = "file://${file.absolutePath}"
         // If the viewer is already loaded, call loadPdf() directly;
         // otherwise it will be called from onPageFinished / onViewerReady.
