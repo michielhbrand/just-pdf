@@ -5,14 +5,16 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.view.MotionEvent
-import android.view.ScaleGestureDetector
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowInsets
+import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.widget.ImageButton
 import android.widget.ImageView
@@ -68,12 +70,6 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        @Suppress("DEPRECATION")
-        window.decorView.systemUiVisibility = (
-            View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-        )
 
         setContentView(R.layout.activity_main)
 
@@ -86,7 +82,7 @@ class MainActivity : AppCompatActivity() {
 
         recyclerView.layoutManager = LinearLayoutManager(this)
 
-        // Show toolbar on tap anywhere on the RecyclerView
+        // Show toolbar (and temporarily restore nav bar) on tap
         recyclerView.setOnTouchListener { _, event ->
             if (event.action == MotionEvent.ACTION_UP) showToolbar()
             false
@@ -110,6 +106,15 @@ class MainActivity : AppCompatActivity() {
         handleIncomingIntent(intent)
     }
 
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        // Re-apply immersive mode whenever the window regains focus
+        // (e.g. after a dialog or system overlay is dismissed).
+        if (hasFocus && currentFile != null) {
+            enterImmersiveMode()
+        }
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handleIncomingIntent(intent)
@@ -119,6 +124,52 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
         toolbarHandler.removeCallbacks(hideToolbarRunnable)
         closePdfRenderer()
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Immersive / navigation-bar hiding
+    // ──────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Hides the system navigation bar (and status bar) using the appropriate
+     * API for the running Android version.
+     *
+     * - API 30+: [WindowInsetsController] with BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+     * - API 21–29: legacy [View.SYSTEM_UI_FLAG_HIDE_NAVIGATION] + IMMERSIVE_STICKY
+     */
+    private fun enterImmersiveMode() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.setDecorFitsSystemWindows(false)
+            window.insetsController?.let { ctrl ->
+                ctrl.hide(WindowInsets.Type.systemBars())
+                ctrl.systemBarsBehavior =
+                    WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = (
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                    or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                    or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                    or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                    or View.SYSTEM_UI_FLAG_FULLSCREEN
+                    or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+            )
+        }
+    }
+
+    /** Temporarily restore system bars so the user can interact with the toolbar. */
+    private fun exitImmersiveMode() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.insetsController?.show(WindowInsets.Type.systemBars())
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = (
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                    or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                    or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+            )
+        }
     }
 
     // ──────────────────────────────────────────────────────────────────────────
@@ -172,6 +223,7 @@ class MainActivity : AppCompatActivity() {
         recyclerView.adapter = adapter
         updatePageCounter(0, pageCount)
         showToolbar()
+        enterImmersiveMode()
     }
 
     private fun closePdfRenderer() {
@@ -190,6 +242,8 @@ class MainActivity : AppCompatActivity() {
         toolbar.animate().cancel()
         toolbar.alpha = 1f
         toolbar.visibility = View.VISIBLE
+        // Temporarily show nav bar so the user can interact with the toolbar
+        if (currentFile != null) exitImmersiveMode()
         scheduleHideToolbar()
     }
 
@@ -197,7 +251,11 @@ class MainActivity : AppCompatActivity() {
         toolbar.animate()
             .alpha(0f)
             .setDuration(300)
-            .withEndAction { toolbar.visibility = View.GONE }
+            .withEndAction {
+                toolbar.visibility = View.GONE
+                // Re-enter immersive mode once toolbar is gone
+                if (currentFile != null) enterImmersiveMode()
+            }
             .start()
     }
 
@@ -249,13 +307,17 @@ class MainActivity : AppCompatActivity() {
         private val pageCount: Int
     ) : RecyclerView.Adapter<PdfPageAdapter.PageViewHolder>() {
 
-        inner class PageViewHolder(val imageView: ImageView) : RecyclerView.ViewHolder(imageView)
+        inner class PageViewHolder(
+            val zoomLayout: ZoomLayout,
+            val imageView: ImageView
+        ) : RecyclerView.ViewHolder(zoomLayout)
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): PageViewHolder {
-            val imageView = layoutInflater.inflate(
+            val zoomLayout = layoutInflater.inflate(
                 R.layout.item_pdf_page, parent, false
-            ) as ImageView
-            return PageViewHolder(imageView)
+            ) as ZoomLayout
+            val imageView = zoomLayout.findViewById<ImageView>(R.id.pageImage)
+            return PageViewHolder(zoomLayout, imageView)
         }
 
         override fun onBindViewHolder(holder: PageViewHolder, position: Int) {

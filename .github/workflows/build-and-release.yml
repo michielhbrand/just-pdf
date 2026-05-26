@@ -1,0 +1,71 @@
+name: Build & Release APK
+
+# Triggers on every push to main (and can be run manually)
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build debug APK and publish to GitHub Releases
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write   # needed to create/update releases and upload assets
+
+    steps:
+      # ── 1. Checkout ──────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Java ──────────────────────────────────────────────────────────────
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+
+      # ── 3. Gradle permissions ────────────────────────────────────────────────
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+
+      # ── 4. Build ─────────────────────────────────────────────────────────────
+      - name: Build debug APK
+        run: ./gradlew assembleDebug --no-daemon
+
+      # ── 5. Rename APK with commit SHA for traceability ───────────────────────
+      - name: Rename APK
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          mv app/build/outputs/apk/debug/app-debug.apk \
+             app/build/outputs/apk/debug/justpdf-debug-${SHORT_SHA}.apk
+          echo "APK_PATH=app/build/outputs/apk/debug/justpdf-debug-${SHORT_SHA}.apk" >> $GITHUB_ENV
+          echo "APK_NAME=justpdf-debug-${SHORT_SHA}.apk" >> $GITHUB_ENV
+
+      # ── 6. Delete previous 'latest' release (if it exists) ──────────────────
+      #    This keeps only the most recent build under the same stable URL.
+      - name: Delete existing 'latest' release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete latest --yes --cleanup-tag 2>/dev/null || true
+
+      # ── 7. Create new 'latest' release and upload APK ───────────────────────
+      - name: Create GitHub Release and upload APK
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          COMMIT_MSG=$(git log -1 --pretty=format:"%s")
+          gh release create latest \
+            --title "Latest build (${SHORT_SHA})" \
+            --notes "**Commit:** \`${SHORT_SHA}\` — ${COMMIT_MSG}
+
+          Built automatically on push to \`main\`.
+          Download the APK below and install it on your Android device.
+          *(Enable 'Install from unknown sources' in Android settings if prompted.)*" \
+            --prerelease \
+            "${{ env.APK_PATH }}#JustPdf Debug APK"
