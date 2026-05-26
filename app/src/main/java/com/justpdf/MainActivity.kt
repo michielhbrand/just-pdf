@@ -2,10 +2,15 @@ package com.justpdf
 
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.View
 import android.view.WindowInsets
 import android.view.WindowInsetsController
@@ -115,10 +120,6 @@ class MainActivity : AppCompatActivity() {
             cacheMode = WebSettings.LOAD_NO_CACHE
         }
 
-        // Do NOT let the WebView consume long-press — HTML text selection needs it
-        webView.isLongClickable = false
-        webView.setOnLongClickListener { false }
-
         // Expose Android bridge to JavaScript
         webView.addJavascriptInterface(PdfJsBridge(), "Android")
 
@@ -181,7 +182,23 @@ class MainActivity : AppCompatActivity() {
                 tvEmpty.visibility = View.GONE
                 webView.visibility = View.VISIBLE
                 updatePageCounter(1, pageCount)
-                enterImmersiveMode()
+                // Defer immersive mode by 600ms so the system doesn't intercept
+                // the first long-press to transiently show the navigation bar.
+                Handler(Looper.getMainLooper()).postDelayed({ enterImmersiveMode() }, 600)
+            }
+        }
+
+        /**
+         * Called by viewer.html when the user taps the Copy button after a
+         * long-press text selection. Writes the text to the system clipboard
+         * and shows a confirmation toast.
+         */
+        @JavascriptInterface
+        fun copyToClipboard(text: String) {
+            runOnUiThread {
+                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("PDF text", text))
+                Toast.makeText(this@MainActivity, "Copied", Toast.LENGTH_SHORT).show()
             }
         }
 
