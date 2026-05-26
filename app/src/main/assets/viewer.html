@@ -313,8 +313,11 @@
         }).promise;
 
         // Text layer
+        // pdf.js v4 TextLayer sizes the container via CSS var(--scale-factor).
+        // Without it the layer renders at scale 0 → all spans appear tiny.
         const textLayerDiv = document.createElement('div');
         textLayerDiv.className = 'textLayer';
+        textLayerDiv.style.setProperty('--scale-factor', String(scale));
 
         const textContent = await page.getTextContent();
         const textLayer   = new pdfjsLib.TextLayer({
