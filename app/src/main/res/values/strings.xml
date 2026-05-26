@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">JustPdf</string>
+    <string name="action_share">Share</string>
+    <string name="action_open_file">Open file</string>
+    <string name="page_counter">%1$d / %2$d</string>
+    <string name="error_cannot_open">Cannot open this file</string>
+    <string name="share_via">Share PDF via</string>
+    <string name="tap_to_open">Tap the folder icon to open a PDF</string>
+</resources>
