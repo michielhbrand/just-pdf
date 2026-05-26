@@ -7,17 +7,29 @@
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
 
-  html, body {
+  html {
+    background: #1a1a1a;
+    /* Allow WebView text selection */
+    -webkit-user-select: text;
+    user-select: text;
+  }
+
+  body {
     background: #1a1a1a;
     width: 100%;
-    height: 100%;
-    overflow-x: hidden;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    /* Centre content vertically when shorter than the viewport */
+    justify-content: center;
   }
 
   #container {
     display: flex;
     flex-direction: column;
     align-items: center;
+    width: 100%;
     padding: 8px 0 80px 0; /* bottom padding clears the toolbar */
   }
 
@@ -27,10 +39,15 @@
     margin: 4px 0;
     background: white;
     box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+    /* Clip text layer to page bounds */
+    overflow: hidden;
   }
 
+  /* Canvas sits behind the text layer */
   .page-wrapper canvas {
     display: block;
+    /* IMPORTANT: pointer-events none so touches reach the text layer */
+    pointer-events: none;
   }
 
   /* ── Text layer (pdf.js) ── */
@@ -42,11 +59,12 @@
     bottom: 0;
     overflow: hidden;
     line-height: 1;
-    /* Text is invisible but selectable */
-    color: transparent;
-    pointer-events: auto;
-    user-select: text;
+    /* z-index above canvas so it receives touch events */
+    z-index: 2;
+    /* Enable text selection */
     -webkit-user-select: text;
+    user-select: text;
+    pointer-events: auto;
   }
 
   .textLayer span,
@@ -56,11 +74,15 @@
     white-space: pre;
     cursor: text;
     transform-origin: 0% 0%;
+    /* Each span must also be selectable */
+    -webkit-user-select: text;
+    user-select: text;
   }
 
   /* Highlight selected text */
+  .textLayer span::selection,
   .textLayer ::selection {
-    background: rgba(0, 120, 255, 0.3);
+    background: rgba(0, 120, 255, 0.35);
     color: transparent;
   }
 
@@ -92,21 +114,24 @@
 <script type="module">
   import * as pdfjsLib from './pdf.mjs';
 
-  // Point the worker at the bundled worker file
   pdfjsLib.GlobalWorkerOptions.workerSrc = './pdf.worker.mjs';
 
-  const container  = document.getElementById('container');
-  const loadingEl  = document.getElementById('loading');
-  const errorEl    = document.getElementById('error');
+  const container = document.getElementById('container');
+  const loadingEl = document.getElementById('loading');
+  const errorEl   = document.getElementById('error');
 
-  // Android calls window.loadPdf(fileUrl) after the page is ready
   window.loadPdf = async function(fileUrl) {
     loadingEl.style.display = 'block';
     errorEl.style.display   = 'none';
     container.innerHTML     = '';
 
     try {
-      const pdf = await pdfjsLib.getDocument({ url: fileUrl, disableStream: true }).promise;
+      const pdf = await pdfjsLib.getDocument({
+        url: fileUrl,
+        disableStream: true,
+        disableAutoFetch: true,
+      }).promise;
+
       loadingEl.style.display = 'none';
 
       const devicePixelRatio = window.devicePixelRatio || 1;
@@ -116,17 +141,17 @@
         const page     = await pdf.getPage(pageNum);
         const viewport = page.getViewport({ scale: 1 });
 
-        // Scale so the page fills the screen width
-        const scale         = viewportWidth / viewport.width;
+        // Scale so the page fills the screen width exactly
+        const scale          = viewportWidth / viewport.width;
         const scaledViewport = page.getViewport({ scale });
 
         // ── Wrapper ──
         const wrapper = document.createElement('div');
-        wrapper.className = 'page-wrapper';
+        wrapper.className    = 'page-wrapper';
         wrapper.style.width  = scaledViewport.width  + 'px';
         wrapper.style.height = scaledViewport.height + 'px';
 
-        // ── Canvas ──
+        // ── Canvas (hi-DPI) ──
         const canvas  = document.createElement('canvas');
         const ctx     = canvas.getContext('2d');
         canvas.width  = Math.floor(scaledViewport.width  * devicePixelRatio);
@@ -142,7 +167,9 @@
         textLayerDiv.className = 'textLayer';
 
         const textContent = await page.getTextContent();
-        const textLayer   = new pdfjsLib.TextLayer({
+
+        // pdf.js v4 TextLayer API
+        const textLayer = new pdfjsLib.TextLayer({
           textContentSource: textContent,
           container: textLayerDiv,
           viewport: scaledViewport,
@@ -162,13 +189,14 @@
       loadingEl.style.display = 'none';
       errorEl.style.display   = 'block';
       errorEl.textContent     = 'Could not open PDF: ' + err.message;
+      console.error(err);
       if (window.Android) {
-        window.Android.onPdfError(err.message);
+        window.Android.onPdfError(err.message || String(err));
       }
     }
   };
 
-  // Signal to Android that the page is ready to receive loadPdf()
+  // Signal to Android that the viewer is ready
   if (window.Android) {
     window.Android.onViewerReady();
   }
