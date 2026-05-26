@@ -1,34 +1,34 @@
 package com.justpdf
 
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Intent
-import android.graphics.Bitmap
-import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.ParcelFileDescriptor
 import android.view.View
-import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
+import android.webkit.JavascriptInterface
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.ImageButton
-import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
-import androidx.recyclerview.widget.LinearLayoutManager
-import androidx.recyclerview.widget.RecyclerView
 import java.io.File
+import java.io.FileInputStream
 
 class MainActivity : AppCompatActivity() {
 
     // ── Views ──────────────────────────────────────────────────────────────────
-    private lateinit var zoomLayout: ZoomLayout
-    private lateinit var recyclerView: RecyclerView
+    private lateinit var webView: WebView
     private lateinit var toolbar: LinearLayout
     private lateinit var btnShare: ImageButton
     private lateinit var btnOpenFile: ImageButton
@@ -37,9 +37,6 @@ class MainActivity : AppCompatActivity() {
 
     // ── PDF state ──────────────────────────────────────────────────────────────
     private var currentFile: File? = null
-    private var pdfRenderer: PdfRenderer? = null
-    private var pdfDescriptor: ParcelFileDescriptor? = null
-    private var adapter: PdfPageAdapter? = null
 
     // ── File picker launcher ───────────────────────────────────────────────────
     private val openFileLauncher =
@@ -60,44 +57,30 @@ class MainActivity : AppCompatActivity() {
     // Lifecycle
     // ──────────────────────────────────────────────────────────────────────────
 
+    @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         setContentView(R.layout.activity_main)
 
-        zoomLayout    = findViewById(R.id.zoomLayout)
-        recyclerView  = findViewById(R.id.recyclerView)
+        webView       = findViewById(R.id.webView)
         toolbar       = findViewById(R.id.toolbar)
         btnShare      = findViewById(R.id.btnShare)
         btnOpenFile   = findViewById(R.id.btnOpenFile)
         tvPageCounter = findViewById(R.id.tvPageCounter)
         tvEmpty       = findViewById(R.id.tvEmpty)
 
-        recyclerView.layoutManager = CenteringLayoutManager(this)
+        setupWebView()
 
         btnShare.setOnClickListener { sharePdf() }
         btnOpenFile.setOnClickListener { openFilePicker() }
-
-        // Track visible page for the counter
-        recyclerView.addOnScrollListener(object : RecyclerView.OnScrollListener() {
-            override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
-                val lm = rv.layoutManager as LinearLayoutManager
-                val firstVisible = lm.findFirstVisibleItemPosition()
-                if (firstVisible != RecyclerView.NO_POSITION) {
-                    val total = adapter?.itemCount ?: 0
-                    updatePageCounter(firstVisible, total)
-                }
-            }
-        })
 
         handleIncomingIntent(intent)
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        // Re-apply immersive mode whenever the window regains focus
-        // (e.g. after a dialog or system overlay is dismissed).
         if (hasFocus && currentFile != null) enterImmersiveMode()
     }
 
@@ -108,20 +91,113 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        closePdfRenderer()
+        webView.destroy()
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // WebView setup
+    // ──────────────────────────────────────────────────────────────────────────
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun setupWebView() {
+        webView.settings.apply {
+            javaScriptEnabled = true
+            allowFileAccess = true
+            // Allow the viewer.html (file://) to load pdf.mjs (also file://)
+            @Suppress("DEPRECATION") allowFileAccessFromFileURLs = true
+            @Suppress("DEPRECATION") allowUniversalAccessFromFileURLs = true
+            builtInZoomControls = true
+            displayZoomControls = false   // hide the +/- overlay buttons
+            setSupportZoom(true)
+            loadWithOverviewMode = true
+            useWideViewPort = true
+            domStorageEnabled = true
+            cacheMode = WebSettings.LOAD_NO_CACHE
+        }
+
+        // Expose Android bridge to JavaScript
+        webView.addJavascriptInterface(PdfJsBridge(), "Android")
+
+        webView.webViewClient = object : WebViewClient() {
+            override fun onPageFinished(view: WebView, url: String) {
+                // viewer.html is loaded — now tell it which PDF to open
+                currentFile?.let { file ->
+                    val fileUrl = "file://${file.absolutePath}"
+                    view.evaluateJavascript("window.loadPdf('$fileUrl')", null)
+                }
+            }
+
+            // Intercept file:// requests for the PDF so we can serve it from
+            // the app's private files directory (content:// URIs can't be
+            // loaded directly by WebView).
+            override fun shouldInterceptRequest(
+                view: WebView,
+                request: WebResourceRequest
+            ): WebResourceResponse? {
+                val path = request.url.path ?: return null
+                val file = File(path)
+                if (file.exists() && path.endsWith(".pdf", ignoreCase = true)) {
+                    return try {
+                        WebResourceResponse(
+                            "application/pdf",
+                            null,
+                            FileInputStream(file)
+                        )
+                    } catch (_: Exception) { null }
+                }
+                return null
+            }
+        }
+
+        // Load the viewer shell — PDF will be injected in onPageFinished
+        webView.loadUrl("file:///android_asset/viewer.html")
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // JavaScript → Android bridge
+    // ──────────────────────────────────────────────────────────────────────────
+
+    private inner class PdfJsBridge {
+
+        /** Called by viewer.html once the pdf.js module is ready. */
+        @JavascriptInterface
+        fun onViewerReady() {
+            runOnUiThread {
+                currentFile?.let { file ->
+                    val fileUrl = "file://${file.absolutePath}"
+                    webView.evaluateJavascript("window.loadPdf('$fileUrl')", null)
+                }
+            }
+        }
+
+        /** Called by viewer.html after all pages have been rendered. */
+        @JavascriptInterface
+        fun onPdfLoaded(pageCount: Int) {
+            runOnUiThread {
+                tvEmpty.visibility = View.GONE
+                webView.visibility = View.VISIBLE
+                updatePageCounter(1, pageCount)
+                enterImmersiveMode()
+            }
+        }
+
+        /** Called by viewer.html if pdf.js fails to open the document. */
+        @JavascriptInterface
+        fun onPdfError(@Suppress("UNUSED_PARAMETER") message: String) {
+            runOnUiThread {
+                Toast.makeText(
+                    this@MainActivity,
+                    getString(R.string.error_cannot_open),
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
     }
 
     // ──────────────────────────────────────────────────────────────────────────
     // Immersive / navigation-bar hiding
     // ──────────────────────────────────────────────────────────────────────────
 
-    /**
-     * Hides the system navigation bar (and status bar) using the appropriate
-     * API for the running Android version.
-     *
-     * - API 30+: [WindowInsetsController] with BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-     * - API 21–29: legacy SYSTEM_UI_FLAG_HIDE_NAVIGATION + IMMERSIVE_STICKY
-     */
     private fun enterImmersiveMode() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             window.setDecorFitsSystemWindows(false)
@@ -175,41 +251,19 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun loadPdfFromFile(file: File) {
-        closePdfRenderer()
         currentFile = file
-
-        try {
-            pdfDescriptor = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
-            pdfRenderer = PdfRenderer(pdfDescriptor!!)
-        } catch (e: Exception) {
-            Toast.makeText(this, R.string.error_cannot_open, Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        val pageCount = pdfRenderer!!.pageCount
-        tvEmpty.visibility = View.GONE
-        recyclerView.visibility = View.VISIBLE
-
-        adapter = PdfPageAdapter(pdfRenderer!!, pageCount)
-        recyclerView.adapter = adapter
-        updatePageCounter(0, pageCount)
-        zoomLayout.resetZoom()
-        enterImmersiveMode()
-    }
-
-    private fun closePdfRenderer() {
-        try { pdfRenderer?.close() } catch (_: Exception) {}
-        try { pdfDescriptor?.close() } catch (_: Exception) {}
-        pdfRenderer = null
-        pdfDescriptor = null
+        val fileUrl = "file://${file.absolutePath}"
+        // If the viewer is already loaded, call loadPdf() directly;
+        // otherwise it will be called from onPageFinished / onViewerReady.
+        webView.evaluateJavascript("if(window.loadPdf) window.loadPdf('$fileUrl')", null)
     }
 
     // ──────────────────────────────────────────────────────────────────────────
-    // Toolbar — always visible, never hides
+    // Toolbar
     // ──────────────────────────────────────────────────────────────────────────
 
     private fun updatePageCounter(page: Int, pageCount: Int) {
-        tvPageCounter.text = getString(R.string.page_counter, page + 1, pageCount)
+        tvPageCounter.text = getString(R.string.page_counter, page, pageCount)
     }
 
     // ──────────────────────────────────────────────────────────────────────────
@@ -240,42 +294,5 @@ class MainActivity : AppCompatActivity() {
             type = "application/pdf"
         }
         openFileLauncher.launch(intent)
-    }
-
-    // ──────────────────────────────────────────────────────────────────────────
-    // RecyclerView Adapter — renders each PDF page as a Bitmap via PdfRenderer
-    // ──────────────────────────────────────────────────────────────────────────
-
-    private inner class PdfPageAdapter(
-        private val renderer: PdfRenderer,
-        private val pageCount: Int
-    ) : RecyclerView.Adapter<PdfPageAdapter.PageViewHolder>() {
-
-        inner class PageViewHolder(val imageView: ImageView) :
-            RecyclerView.ViewHolder(imageView)
-
-        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): PageViewHolder {
-            val imageView = layoutInflater.inflate(
-                R.layout.item_pdf_page, parent, false
-            ) as ImageView
-            return PageViewHolder(imageView)
-        }
-
-        override fun onBindViewHolder(holder: PageViewHolder, position: Int) {
-            val page = renderer.openPage(position)
-            val screenWidth = resources.displayMetrics.widthPixels
-            val scale = screenWidth.toFloat() / page.width
-            val bitmapWidth = screenWidth
-            val bitmapHeight = (page.height * scale).toInt()
-
-            val bitmap = Bitmap.createBitmap(bitmapWidth, bitmapHeight, Bitmap.Config.ARGB_8888)
-            bitmap.eraseColor(android.graphics.Color.WHITE)
-            page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-            page.close()
-
-            holder.imageView.setImageBitmap(bitmap)
-        }
-
-        override fun getItemCount(): Int = pageCount
     }
 }

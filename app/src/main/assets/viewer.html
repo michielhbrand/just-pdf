@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes"/>
+<title>JustPdf</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body {
+    background: #1a1a1a;
+    width: 100%;
+    height: 100%;
+    overflow-x: hidden;
+  }
+
+  #container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 8px 0 80px 0; /* bottom padding clears the toolbar */
+  }
+
+  /* ── Page wrapper ── */
+  .page-wrapper {
+    position: relative;
+    margin: 4px 0;
+    background: white;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+  }
+
+  .page-wrapper canvas {
+    display: block;
+  }
+
+  /* ── Text layer (pdf.js) ── */
+  .textLayer {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    overflow: hidden;
+    line-height: 1;
+    /* Text is invisible but selectable */
+    color: transparent;
+    pointer-events: auto;
+    user-select: text;
+    -webkit-user-select: text;
+  }
+
+  .textLayer span,
+  .textLayer br {
+    color: transparent;
+    position: absolute;
+    white-space: pre;
+    cursor: text;
+    transform-origin: 0% 0%;
+  }
+
+  /* Highlight selected text */
+  .textLayer ::selection {
+    background: rgba(0, 120, 255, 0.3);
+    color: transparent;
+  }
+
+  /* ── Loading indicator ── */
+  #loading {
+    color: #aaa;
+    font-family: sans-serif;
+    font-size: 16px;
+    padding: 40px;
+    text-align: center;
+  }
+
+  /* ── Error message ── */
+  #error {
+    display: none;
+    color: #ff6b6b;
+    font-family: sans-serif;
+    font-size: 14px;
+    padding: 20px;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+<div id="loading">Loading…</div>
+<div id="error"></div>
+<div id="container"></div>
+
+<script type="module">
+  import * as pdfjsLib from './pdf.mjs';
+
+  // Point the worker at the bundled worker file
+  pdfjsLib.GlobalWorkerOptions.workerSrc = './pdf.worker.mjs';
+
+  const container  = document.getElementById('container');
+  const loadingEl  = document.getElementById('loading');
+  const errorEl    = document.getElementById('error');
+
+  // Android calls window.loadPdf(fileUrl) after the page is ready
+  window.loadPdf = async function(fileUrl) {
+    loadingEl.style.display = 'block';
+    errorEl.style.display   = 'none';
+    container.innerHTML     = '';
+
+    try {
+      const pdf = await pdfjsLib.getDocument({ url: fileUrl, disableStream: true }).promise;
+      loadingEl.style.display = 'none';
+
+      const devicePixelRatio = window.devicePixelRatio || 1;
+      const viewportWidth    = window.innerWidth;
+
+      for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+        const page     = await pdf.getPage(pageNum);
+        const viewport = page.getViewport({ scale: 1 });
+
+        // Scale so the page fills the screen width
+        const scale         = viewportWidth / viewport.width;
+        const scaledViewport = page.getViewport({ scale });
+
+        // ── Wrapper ──
+        const wrapper = document.createElement('div');
+        wrapper.className = 'page-wrapper';
+        wrapper.style.width  = scaledViewport.width  + 'px';
+        wrapper.style.height = scaledViewport.height + 'px';
+
+        // ── Canvas ──
+        const canvas  = document.createElement('canvas');
+        const ctx     = canvas.getContext('2d');
+        canvas.width  = Math.floor(scaledViewport.width  * devicePixelRatio);
+        canvas.height = Math.floor(scaledViewport.height * devicePixelRatio);
+        canvas.style.width  = scaledViewport.width  + 'px';
+        canvas.style.height = scaledViewport.height + 'px';
+
+        const hiDpiViewport = page.getViewport({ scale: scale * devicePixelRatio });
+        await page.render({ canvasContext: ctx, viewport: hiDpiViewport }).promise;
+
+        // ── Text layer ──
+        const textLayerDiv = document.createElement('div');
+        textLayerDiv.className = 'textLayer';
+
+        const textContent = await page.getTextContent();
+        const textLayer   = new pdfjsLib.TextLayer({
+          textContentSource: textContent,
+          container: textLayerDiv,
+          viewport: scaledViewport,
+        });
+        await textLayer.render();
+
+        wrapper.appendChild(canvas);
+        wrapper.appendChild(textLayerDiv);
+        container.appendChild(wrapper);
+      }
+
+      // Notify Android of the page count
+      if (window.Android) {
+        window.Android.onPdfLoaded(pdf.numPages);
+      }
+    } catch (err) {
+      loadingEl.style.display = 'none';
+      errorEl.style.display   = 'block';
+      errorEl.textContent     = 'Could not open PDF: ' + err.message;
+      if (window.Android) {
+        window.Android.onPdfError(err.message);
+      }
+    }
+  };
+
+  // Signal to Android that the page is ready to receive loadPdf()
+  if (window.Android) {
+    window.Android.onViewerReady();
+  }
+</script>
+</body>
+</html>

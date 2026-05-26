@@ -1,9 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-    Root FrameLayout: full-screen ZoomLayout (wraps the entire RecyclerView so
-    pinch-to-zoom scales all PDF pages together as one document) with a floating
-    toolbar overlay at the bottom.
-    The toolbar auto-hides after 3 seconds of inactivity and reappears on tap.
+    Root FrameLayout: full-screen WebView (pdf.js renders all pages with a text
+    layer for selection/copy) with a floating toolbar overlay at the bottom.
 -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
@@ -11,20 +9,11 @@
     android:layout_height="match_parent"
     android:background="@color/background">
 
-    <!-- ZoomLayout wraps the RecyclerView so the entire document zooms together -->
-    <com.justpdf.ZoomLayout
-        android:id="@+id/zoomLayout"
+    <!-- WebView renders the PDF via pdf.js (pinch-zoom + text selection built-in) -->
+    <WebView
+        android:id="@+id/webView"
         android:layout_width="match_parent"
-        android:layout_height="match_parent">
-
-        <!-- PDF pages rendered as a continuous vertical list -->
-        <androidx.recyclerview.widget.RecyclerView
-            android:id="@+id/recyclerView"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:scrollbars="vertical" />
-
-    </com.justpdf.ZoomLayout>
+        android:layout_height="match_parent" />
 
     <!-- Empty state: shown when no PDF is loaded -->
     <TextView
