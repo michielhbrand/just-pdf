@@ -176,16 +176,17 @@
 
         // Fix selection highlight alignment.
         //
-        // pdf.js applies scaleX() to each span to visually stretch the browser font
-        // to match the PDF canvas text width. However, the ::selection highlight covers
-        // the span's CSS layout box (pre-scaleX), not the post-scaleX visual bounds.
-        // When scaleX > 1, the highlight box is narrower than the visual text, causing
-        // the highlight to appear shifted right relative to the canvas text.
+        // pdf.js applies scaleX() to stretch the browser font to match the PDF canvas
+        // text width. CSS transform does NOT affect the layout box, so ::selection
+        // highlights the pre-transform layout box — which is narrower than the visual
+        // text when scaleX > 1. This causes the highlight to appear too narrow/shifted.
         //
-        // Fix: remove scaleX and set width = item.width * scale (exact canvas CSS width).
-        // The layout box now matches the canvas text width, so the highlight aligns.
-        // The browser font glyphs render slightly narrower than the PDF font inside this
-        // box, but the highlight boundary is correct.
+        // Fix: replace scaleX with letter-spacing so the browser text naturally fills
+        // item.width * scale CSS pixels. With scaleX=1, layout box == visual bounds.
+        //
+        // letter-spacing = (targetWidth - naturalWidth) / charCount
+        // naturalWidth = targetWidth / scaleX  (since scaleX = targetWidth / naturalWidth)
+        // letter-spacing = targetWidth * (1 - 1/scaleX) / charCount
         //
         // Mapping: TextLayer creates one <span> per item where item.str !== ''.
         const spans = Array.from(textLayerDiv.querySelectorAll('span'));
@@ -195,11 +196,22 @@
           if (!item.str || item.str === '') continue;
           const span = spans[si++];
           const pdfW = Math.abs(item.width);
-          if (pdfW > 0) {
-            const t = span.style.transform || '';
-            span.style.transform = t.replace(/scaleX\([^)]*\)\s*/g, '').trim();
-            span.style.width = (pdfW * scale) + 'px';
+          if (pdfW <= 0) continue;
+          const targetW = pdfW * scale;
+          const t = span.style.transform || '';
+          const scaleXMatch = t.match(/scaleX\(([\d.e+-]+)\)/);
+          if (scaleXMatch) {
+            const sx = parseFloat(scaleXMatch[1]);
+            if (sx > 0 && sx !== 1) {
+              const charCount = item.str.length;
+              const letterSpacing = charCount > 0
+                ? targetW * (1 - 1 / sx) / charCount
+                : 0;
+              span.style.transform = t.replace(/scaleX\([^)]*\)\s*/g, '').trim();
+              span.style.letterSpacing = letterSpacing + 'px';
+            }
           }
+          span.style.width = targetW + 'px';
         }
 
         wrapper.appendChild(canvas);
