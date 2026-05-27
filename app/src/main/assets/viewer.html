@@ -176,16 +176,16 @@
 
         // Fix selection highlight alignment.
         //
-        // The ::selection highlight follows the rendered glyph positions, which depend
-        // on the browser's substituted font metrics. The browser font is slightly wider
-        // than the PDF's embedded font, so glyphs shift progressively right.
+        // pdf.js applies scaleX() to each span to visually stretch the browser font
+        // to match the PDF canvas text width. However, the ::selection highlight covers
+        // the span's CSS layout box (pre-scaleX), not the post-scaleX visual bounds.
+        // When scaleX > 1, the highlight box is narrower than the visual text, causing
+        // the highlight to appear shifted right relative to the canvas text.
         //
-        // pdf.js applies scaleX() to compress the browser glyphs to match the PDF width.
-        // We must KEEP scaleX (so glyphs render at the correct width) but also set the
-        // span's pre-transform layout width so that:
-        //   pre-transform-width * scaleX = item.width * scale  (exact canvas CSS width)
-        //
-        // This makes the layout box == visual bounds == canvas text width.
+        // Fix: remove scaleX and set width = item.width * scale (exact canvas CSS width).
+        // The layout box now matches the canvas text width, so the highlight aligns.
+        // The browser font glyphs render slightly narrower than the PDF font inside this
+        // box, but the highlight boundary is correct.
         //
         // Mapping: TextLayer creates one <span> per item where item.str !== ''.
         const spans = Array.from(textLayerDiv.querySelectorAll('span'));
@@ -196,20 +196,9 @@
           const span = spans[si++];
           const pdfW = Math.abs(item.width);
           if (pdfW > 0) {
-            const targetCssW = pdfW * scale;
             const t = span.style.transform || '';
-            // Extract the scaleX value from the transform string
-            const scaleXMatch = t.match(/scaleX\(([\d.e+-]+)\)/);
-            if (scaleXMatch) {
-              const sx = parseFloat(scaleXMatch[1]);
-              if (sx > 0) {
-                // Set pre-transform width so post-transform width = targetCssW
-                span.style.width = (targetCssW / sx) + 'px';
-              }
-            } else {
-              // No scaleX — just set width directly
-              span.style.width = targetCssW + 'px';
-            }
+            span.style.transform = t.replace(/scaleX\([^)]*\)\s*/g, '').trim();
+            span.style.width = (pdfW * scale) + 'px';
           }
         }
 
