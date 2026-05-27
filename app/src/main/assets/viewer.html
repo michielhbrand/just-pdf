@@ -11,7 +11,6 @@
     background: #1a1a1a;
     width: 100%;
     height: 100%;
-    /* Enable native text selection throughout */
     -webkit-user-select: text;
     user-select: text;
   }
@@ -39,24 +38,19 @@
     box-shadow: 0 2px 8px rgba(0,0,0,0.5);
   }
 
-  /* Canvas sits behind the text layer */
   .page-wrapper canvas {
     display: block;
-    /* pointer-events:none so touches reach the selectable text layer */
     pointer-events: none;
   }
 
-  /* ── Text layer ── */
   .textLayer {
     position: absolute;
     top: 0;
     left: 0;
-    /* width/height are set by pdf.js setLayerDimensions via --scale-factor */
     overflow: visible;
     line-height: 1;
     z-index: 2;
     pointer-events: auto;
-    /* Enable native text selection */
     -webkit-user-select: text;
     user-select: text;
     -webkit-touch-callout: default;
@@ -72,13 +66,13 @@
     user-select: text;
   }
 
-  /* Suppress the native ::selection highlight — we draw our own on canvas */
+  /* Suppress native ::selection — we draw our own */
   .textLayer span::selection {
     background: transparent;
     color: transparent;
   }
 
-  /* ── Highlight overlay canvas ── */
+  /* Highlight overlay canvas — sits above text layer, no pointer events */
   .highlightLayer {
     position: absolute;
     top: 0;
@@ -87,7 +81,6 @@
     z-index: 3;
   }
 
-  /* ── Loading / error ── */
   #loading {
     color: #aaa;
     font-family: sans-serif;
@@ -128,17 +121,115 @@
   const loadingEl = document.getElementById('loading');
   const errorEl   = document.getElementById('error');
 
-  // Array of { canvas, ctx } for each page's highlight overlay.
-  // Rebuilt every time a new PDF is loaded.
+  // Per-page highlight canvases, rebuilt on each PDF load.
   const highlightLayers = [];
 
-  // ── Canvas-drawn selection highlight ──────────────────────────────────────
-  // We suppress the native ::selection background and instead draw blue
-  // rectangles on a per-page overlay canvas.  Range.getClientRects() returns
-  // the *actual* visual bounding boxes (post-scaleX transform), so the
-  // highlight aligns perfectly with the rendered text.
+  // ── Canvas-drawn selection highlight ─────────────────────────────────────
+  //
+  // Android WebView's Range.getClientRects() returns the *layout* box of each
+  // span (pre-scaleX transform), not the visual bounds.  So we cannot use it
+  // directly.
+  //
+  // Instead we walk the selection Range node-by-node and compute each span's
+  // visual rectangle ourselves:
+  //
+  //   spanLeft  = parseFloat(span.style.left)          (CSS px, set by pdf.js)
+  //   spanTop   = parseFloat(span.style.top)           (CSS px)
+  //   spanH     = span.offsetHeight                    (CSS px, unscaled)
+  //   scaleX    = extracted from span.style.transform  (e.g. "scaleX(1.23)")
+  //   fullW     = span.offsetWidth * scaleX            (visual width, CSS px)
+  //
+  // For partial selections within a span we use a hidden <canvas> to measure
+  // character advances with the span's exact font, then scale by scaleX.
+  //
+  // All coordinates are in the page-wrapper's local CSS-pixel space, which
+  // matches the highlightLayer canvas coordinate space (1:1, no dpr).
 
   const HIGHLIGHT_COLOR = 'rgba(0, 120, 255, 0.35)';
+
+  // Reusable off-screen canvas for text measurement.
+  const measureCanvas = document.createElement('canvas');
+  const measureCtx    = measureCanvas.getContext('2d');
+
+  /** Extract the scaleX value from a span's transform style. */
+  function getScaleX(span) {
+    const t = span.style.transform || '';
+    const m = t.match(/scaleX\(([\d.eE+\-]+)\)/);
+    return m ? parseFloat(m[1]) : 1;
+  }
+
+  /**
+   * Given a span and a character offset range [startOff, endOff),
+   * return the visual x-start and x-width within the span (in CSS px,
+   * already multiplied by scaleX).
+   */
+  function measureCharRange(span, startOff, endOff) {
+    const text = span.textContent;
+    measureCtx.font = window.getComputedStyle(span).font;
+    const sx = getScaleX(span);
+    // Width of text before startOff
+    const xStart = measureCtx.measureText(text.slice(0, startOff)).width * sx;
+    // Width of text before endOff
+    const xEnd   = measureCtx.measureText(text.slice(0, endOff)).width   * sx;
+    return { xStart, width: xEnd - xStart };
+  }
+
+  /**
+   * Return an array of { x, y, w, h } rects (in page-wrapper local CSS px)
+   * for the given selection Range.
+   */
+  function computeHighlightRects(range) {
+    const rects = [];
+
+    // Collect all text-layer spans that intersect the range.
+    // We use a TreeWalker over the range's common ancestor.
+    const ancestor = range.commonAncestorContainer;
+    const root = ancestor.nodeType === Node.TEXT_NODE
+      ? ancestor.parentElement
+      : ancestor;
+
+    // Walk all text nodes within the range.
+    const walker = document.createTreeWalker(
+      root.closest('.textLayer') || root,
+      NodeFilter.SHOW_TEXT,
+      null
+    );
+
+    let node;
+    while ((node = walker.nextNode())) {
+      // Check if this text node is within the range.
+      const nodeRange = document.createRange();
+      nodeRange.selectNode(node);
+      if (range.compareBoundaryPoints(Range.END_TO_START, nodeRange) >= 0) continue;
+      if (range.compareBoundaryPoints(Range.START_TO_END, nodeRange) <= 0) continue;
+
+      const span = node.parentElement;
+      if (!span || !span.closest('.textLayer')) continue;
+
+      const text     = node.textContent;
+      const startOff = (node === range.startContainer) ? range.startOffset : 0;
+      const endOff   = (node === range.endContainer)   ? range.endOffset   : text.length;
+
+      if (startOff >= endOff) continue;
+
+      // Span position in page-wrapper local coords (set by pdf.js as px values).
+      const spanLeft = parseFloat(span.style.left) || 0;
+      const spanTop  = parseFloat(span.style.top)  || 0;
+      const spanH    = span.offsetHeight;
+      const sx       = getScaleX(span);
+
+      const { xStart, width } = measureCharRange(span, startOff, endOff);
+
+      rects.push({
+        x: spanLeft + xStart,
+        y: spanTop,
+        w: width,
+        h: spanH,
+      });
+    }
+
+    return rects;
+  }
 
   function clearHighlights() {
     for (const { canvas, ctx } of highlightLayers) {
@@ -153,39 +244,40 @@
     if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
 
     const range = sel.getRangeAt(0);
-    const rects = range.getClientRects();
-    if (!rects || rects.length === 0) return;
 
-    for (const { canvas, ctx } of highlightLayers) {
-      // Get the canvas's position in the viewport (CSS pixels).
-      const canvasRect = canvas.getBoundingClientRect();
+    // Find which page-wrapper the selection starts in.
+    // We draw on the highlight canvas of each page that contains selected spans.
+    const rects = computeHighlightRects(range);
+    if (rects.length === 0) return;
 
-      // The canvas logical size equals its CSS size (1:1 mapping).
-      // We draw directly in CSS-pixel coordinates.
-      let drew = false;
-      for (const r of rects) {
-        // Only draw rects that overlap this canvas.
-        if (r.right  < canvasRect.left   ||
-            r.left   > canvasRect.right  ||
-            r.bottom < canvasRect.top    ||
-            r.top    > canvasRect.bottom) {
-          continue;
-        }
-        // Translate from viewport coords to canvas-local coords.
-        const x = r.left   - canvasRect.left;
-        const y = r.top    - canvasRect.top;
-        const w = r.width;
-        const h = r.height;
-        if (!drew) {
-          ctx.fillStyle = HIGHLIGHT_COLOR;
-          drew = true;
-        }
-        ctx.fillRect(x, y, w, h);
-      }
+    // Each highlightLayer canvas covers exactly one page-wrapper.
+    // The canvas coordinate space = page-wrapper local CSS px (top-left = 0,0).
+    // computeHighlightRects already returns coords in page-wrapper local space
+    // IF the span's style.left/top are relative to the page-wrapper.
+    // pdf.js sets span positions relative to the textLayer div, which is
+    // absolutely positioned at (0,0) within the page-wrapper — so they are
+    // already in page-wrapper local space.
+
+    // Find the page-wrapper that contains the selection's start node.
+    const startNode = range.startContainer;
+    const startEl   = startNode.nodeType === Node.TEXT_NODE
+      ? startNode.parentElement
+      : startNode;
+    const wrapper   = startEl.closest('.page-wrapper');
+
+    if (!wrapper) return;
+
+    // Find the highlight canvas for this wrapper.
+    const hlCanvas = wrapper.querySelector('.highlightLayer');
+    if (!hlCanvas) return;
+
+    const ctx = hlCanvas.getContext('2d');
+    ctx.fillStyle = HIGHLIGHT_COLOR;
+    for (const { x, y, w, h } of rects) {
+      ctx.fillRect(x, y, w, h);
     }
   }
 
-  // Listen for selection changes on the whole document.
   document.addEventListener('selectionchange', drawHighlight);
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -195,7 +287,7 @@
     loadingEl.style.display = 'block';
     errorEl.style.display   = 'none';
     container.innerHTML     = '';
-    highlightLayers.length  = 0;   // clear previous page canvases
+    highlightLayers.length  = 0;
 
     try {
       const pdf = await pdfjsLib.getDocument({
@@ -234,11 +326,9 @@
         }).promise;
 
         // ── Text layer ──
-        // Pass viewport.scale = scale/dpr to TextLayer so its internal
-        // this.#scale = (scale/dpr)*dpr = scale (correct for CSS-pixel measurements).
-        // This gives accurate scaleX values matching the canvas-rendered text widths.
-        // We still set --scale-factor = scale manually so setLayerDimensions sizes
-        // the container correctly at scale * pageWidth CSS pixels.
+        // viewport.scale = scale/dpr → TextLayer#scale = (scale/dpr)*dpr = scale
+        // so scaleX values are correct for CSS-pixel measurements.
+        // --scale-factor = scale so setLayerDimensions sizes the container correctly.
         const textLayerDiv = document.createElement('div');
         textLayerDiv.className = 'textLayer';
         textLayerDiv.style.setProperty('--scale-factor', String(scale));
@@ -253,17 +343,14 @@
         await textLayer.render();
 
         // ── Highlight overlay canvas (CSS-pixel size, 1:1) ──
-        // We intentionally do NOT multiply by dpr here: the canvas coordinate
-        // space must match the CSS-pixel coordinates returned by getClientRects().
+        // No dpr multiplication: canvas coords must match page-wrapper local CSS px.
         const hlCanvas = document.createElement('canvas');
         hlCanvas.className    = 'highlightLayer';
         hlCanvas.width        = Math.floor(sv.width);
         hlCanvas.height       = Math.floor(sv.height);
         hlCanvas.style.width  = sv.width  + 'px';
         hlCanvas.style.height = sv.height + 'px';
-        const hlCtx = hlCanvas.getContext('2d');
-
-        highlightLayers.push({ canvas: hlCanvas, ctx: hlCtx });
+        highlightLayers.push({ canvas: hlCanvas, ctx: hlCanvas.getContext('2d') });
 
         wrapper.appendChild(canvas);
         wrapper.appendChild(textLayerDiv);
