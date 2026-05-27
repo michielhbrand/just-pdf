@@ -1,0 +1,12 @@
+{
+  "name": "justpdf-highlight-tests",
+  "version": "1.0.0",
+  "description": "Playwright tests for JustPdf selection highlight alignment",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.44.0"
+  }
+}
