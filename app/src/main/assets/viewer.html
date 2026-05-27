@@ -162,14 +162,14 @@
         }).promise;
 
         // ── Text layer ──
-        // pdf.js v4 TextLayer internally computes:
-        //   this.#scale = viewport.scale * devicePixelRatio
-        // and uses #scale to compute scaleX for each span (stretching from left edge).
-        // If we pass sv (scale=scale) the internal #scale = scale * dpr, which makes
-        // scaleX dpr× too large → spans stretch too far right → selection offset.
-        // Fix: pass a viewport with scale = scale/dpr so #scale = (scale/dpr)*dpr = scale,
-        // giving correct CSS-pixel measurements. We still set --scale-factor = scale
-        // manually so setLayerDimensions sizes the container correctly.
+        // pdf.js v4 TextLayer uses scaleX to stretch each span to match canvas text width.
+        // The scaleX is computed by measuring the browser's substituted font, which is
+        // slightly narrower than the PDF's embedded font → scaleX > 1 → spans too wide
+        // → selection highlight overshoots the word, worse near the right margin.
+        //
+        // Fix: after render, replace each span's scaleX with an explicit pixel width
+        // derived from the PDF geometry (item.width * scale), which matches the canvas
+        // exactly. The scaleX transform is removed so the span's hit-test box is correct.
         const textLayerDiv = document.createElement('div');
         textLayerDiv.className = 'textLayer';
         textLayerDiv.style.setProperty('--scale-factor', String(scale));
@@ -182,6 +182,31 @@
           viewport: textLayerVp,
         });
         await textLayer.render();
+
+        // Post-process: fix span widths using PDF geometry instead of browser font metrics.
+        // Text items with str=='' are skipped by TextLayer (no span created), so we must
+        // filter them out when pairing items to spans.
+        const spans = Array.from(textLayerDiv.querySelectorAll('span'));
+        const items = textContent.items.filter(item => item.str !== '');
+        let spanIdx = 0;
+        for (const item of items) {
+          if (spanIdx >= spans.length) break;
+          const span = spans[spanIdx++];
+          // item.width is in PDF user units; multiply by scale to get CSS pixels.
+          // item.transform[0] is the font size component; use it to get the actual
+          // rendered width accounting for the viewport transform.
+          const pdfWidth = Math.abs(item.width);
+          if (pdfWidth > 0) {
+            const cssWidth = pdfWidth * scale;
+            // Remove the scaleX from the existing transform, replace with explicit width.
+            const existingTransform = span.style.transform || '';
+            // Strip any scaleX(...) from the transform string.
+            const cleanTransform = existingTransform.replace(/scaleX\([^)]*\)\s*/g, '').trim();
+            span.style.transform = cleanTransform;
+            span.style.width = cssWidth + 'px';
+            span.style.overflow = 'hidden';
+          }
+        }
 
         wrapper.appendChild(canvas);
         wrapper.appendChild(textLayerDiv);
