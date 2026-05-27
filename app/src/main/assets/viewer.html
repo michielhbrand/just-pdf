@@ -162,49 +162,36 @@
         }).promise;
 
         // ── Text layer ──
-        // pdf.js v4 TextLayer uses scaleX to stretch each span to match canvas text width.
-        // The scaleX is computed by measuring the browser's substituted font, which is
-        // slightly narrower than the PDF's embedded font → scaleX > 1 → spans too wide
-        // → selection highlight overshoots the word, worse near the right margin.
-        //
-        // Fix: after render, replace each span's scaleX with an explicit pixel width
-        // derived from the PDF geometry (item.width * scale), which matches the canvas
-        // exactly. The scaleX transform is removed so the span's hit-test box is correct.
+        // pdf.js v4 TextLayer constructor does:
+        //   this.#scale = viewport.scale * devicePixelRatio
+        // and uses #scale to compute scaleX for each span via ctx.measureText().
+        // ctx.measureText() returns CSS pixels, so the correct #scale for CSS-pixel
+        // accuracy is just viewport.scale (no DPR). We temporarily set devicePixelRatio=1
+        // so the TextLayer measures text at the right size, giving accurate scaleX values
+        // that match the canvas-rendered text widths.
         const textLayerDiv = document.createElement('div');
         textLayerDiv.className = 'textLayer';
         textLayerDiv.style.setProperty('--scale-factor', String(scale));
 
-        const textContent  = await page.getTextContent();
-        const textLayerVp  = page.getViewport({ scale: scale / dpr });
-        const textLayer    = new pdfjsLib.TextLayer({
-          textContentSource: textContent,
-          container: textLayerDiv,
-          viewport: textLayerVp,
-        });
-        await textLayer.render();
+        const textContent = await page.getTextContent();
 
-        // Post-process: fix span widths using PDF geometry instead of browser font metrics.
-        // Text items with str=='' are skipped by TextLayer (no span created), so we must
-        // filter them out when pairing items to spans.
-        const spans = Array.from(textLayerDiv.querySelectorAll('span'));
-        const items = textContent.items.filter(item => item.str !== '');
-        let spanIdx = 0;
-        for (const item of items) {
-          if (spanIdx >= spans.length) break;
-          const span = spans[spanIdx++];
-          // item.width is in PDF user units; multiply by scale to get CSS pixels.
-          // item.transform[0] is the font size component; use it to get the actual
-          // rendered width accounting for the viewport transform.
-          const pdfWidth = Math.abs(item.width);
-          if (pdfWidth > 0) {
-            const cssWidth = pdfWidth * scale;
-            // Remove the scaleX from the existing transform, replace with explicit width.
-            const existingTransform = span.style.transform || '';
-            // Strip any scaleX(...) from the transform string.
-            const cleanTransform = existingTransform.replace(/scaleX\([^)]*\)\s*/g, '').trim();
-            span.style.transform = cleanTransform;
-            span.style.width = cssWidth + 'px';
-            span.style.overflow = 'hidden';
+        // Temporarily override devicePixelRatio so TextLayer's #scale = viewport.scale * 1
+        const savedDpr = Object.getOwnPropertyDescriptor(window, 'devicePixelRatio');
+        Object.defineProperty(window, 'devicePixelRatio', { value: 1, configurable: true });
+        let textLayer;
+        try {
+          textLayer = new pdfjsLib.TextLayer({
+            textContentSource: textContent,
+            container: textLayerDiv,
+            viewport: sv,
+          });
+          await textLayer.render();
+        } finally {
+          // Restore original devicePixelRatio
+          if (savedDpr) {
+            Object.defineProperty(window, 'devicePixelRatio', savedDpr);
+          } else {
+            delete window.devicePixelRatio;
           }
         }
 
