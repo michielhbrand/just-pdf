@@ -11,6 +11,9 @@
     background: #1a1a1a;
     width: 100%;
     height: 100%;
+    /* Enable native text selection throughout */
+    -webkit-user-select: text;
+    user-select: text;
   }
 
   #outer {
@@ -34,12 +37,12 @@
     margin: 4px 0;
     background: white;
     box-shadow: 0 2px 8px rgba(0,0,0,0.5);
-    /* No overflow:hidden — clips edge text spans */
   }
 
+  /* Canvas sits behind the text layer */
   .page-wrapper canvas {
     display: block;
-    /* pointer-events:none so touches reach the text layer */
+    /* pointer-events:none so touches reach the selectable text layer */
     pointer-events: none;
   }
 
@@ -51,6 +54,10 @@
     line-height: 1;
     z-index: 2;
     pointer-events: auto;
+    /* Enable native text selection */
+    -webkit-user-select: text;
+    user-select: text;
+    -webkit-touch-callout: default;
   }
 
   .textLayer span {
@@ -59,30 +66,14 @@
     white-space: pre;
     cursor: text;
     transform-origin: 0% 0%;
+    -webkit-user-select: text;
+    user-select: text;
   }
 
-  /* Highlight applied by JS on long-press selection */
-  .textLayer span.selected {
+  /* Native selection highlight */
+  .textLayer span::selection {
     background: rgba(0, 120, 255, 0.35);
-  }
-
-  /* ── Floating copy button ── */
-  #copyBtn {
-    display: none;
-    position: fixed;
-    z-index: 9999;
-    background: #333;
-    color: #fff;
-    font-family: sans-serif;
-    font-size: 14px;
-    font-weight: 600;
-    padding: 8px 20px;
-    border-radius: 20px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.5);
-    border: none;
-    cursor: pointer;
-    /* Prevent the button tap from triggering another long-press */
-    touch-action: manipulation;
+    color: transparent;
   }
 
   /* ── Loading / error ── */
@@ -109,18 +100,15 @@
   <div id="error"></div>
   <div id="container"></div>
 </div>
-<button id="copyBtn">Copy</button>
 
 <script>
-// ── Load pdf.js as a classic module script ──────────────────────────────────
-// Using a dynamic import() inside a classic <script> avoids the file:// CORS
-// restriction that blocks <script type="module"> on some Android versions.
 (async function () {
   let pdfjsLib;
   try {
     pdfjsLib = await import('./pdf.mjs');
   } catch (e) {
-    showError('Failed to load pdf.js: ' + e.message);
+    document.getElementById('error').style.display = 'block';
+    document.getElementById('error').textContent = 'Failed to load pdf.js: ' + e.message;
     return;
   }
   pdfjsLib.GlobalWorkerOptions.workerSrc = './pdf.worker.mjs';
@@ -128,151 +116,9 @@
   const container = document.getElementById('container');
   const loadingEl = document.getElementById('loading');
   const errorEl   = document.getElementById('error');
-  const copyBtn   = document.getElementById('copyBtn');
 
-  // ── Selection state ────────────────────────────────────────────────────────
-  let selectedSpans = [];
-  let selectedText  = '';
-
-  function clearSelection() {
-    selectedSpans.forEach(s => s.classList.remove('selected'));
-    selectedSpans = [];
-    selectedText  = '';
-    copyBtn.style.display = 'none';
-  }
-
-  // ── Copy button ────────────────────────────────────────────────────────────
-  copyBtn.addEventListener('click', function (e) {
-    e.stopPropagation();
-    if (selectedText && window.Android) {
-      window.Android.copyToClipboard(selectedText);
-    }
-    clearSelection();
-  });
-
-  // Tap anywhere else clears selection
-  document.addEventListener('touchstart', function (e) {
-    if (e.target !== copyBtn && !e.target.closest('.textLayer')) {
-      clearSelection();
-    }
-  }, { passive: true });
-
-  // ── Long-press detection ───────────────────────────────────────────────────
-  const LONG_PRESS_MS = 500;
-
-  function attachLongPress(textLayerDiv) {
-    let timer = null;
-    let startX = 0, startY = 0;
-
-    textLayerDiv.addEventListener('touchstart', function (e) {
-      if (e.touches.length !== 1) return;
-      startX = e.touches[0].clientX;
-      startY = e.touches[0].clientY;
-      timer = setTimeout(() => {
-        handleLongPress(e.touches[0].clientX, e.touches[0].clientY, textLayerDiv);
-      }, LONG_PRESS_MS);
-    }, { passive: true });
-
-    textLayerDiv.addEventListener('touchmove', function (e) {
-      if (!timer) return;
-      const dx = e.touches[0].clientX - startX;
-      const dy = e.touches[0].clientY - startY;
-      // Cancel if finger moved more than 8px (it's a scroll, not a long-press)
-      if (Math.sqrt(dx*dx + dy*dy) > 8) {
-        clearTimeout(timer);
-        timer = null;
-      }
-    }, { passive: true });
-
-    textLayerDiv.addEventListener('touchend', function () {
-      clearTimeout(timer);
-      timer = null;
-    }, { passive: true });
-
-    textLayerDiv.addEventListener('touchcancel', function () {
-      clearTimeout(timer);
-      timer = null;
-    }, { passive: true });
-  }
-
-  // ── Word selection at touch point ──────────────────────────────────────────
-  function handleLongPress(clientX, clientY, textLayerDiv) {
-    clearSelection();
-
-    // Find the span directly under the touch point
-    const el = document.elementFromPoint(clientX, clientY);
-    if (!el || el.tagName !== 'SPAN' || !el.closest('.textLayer')) return;
-
-    // Collect all spans in this text layer, sorted by their left position
-    const allSpans = Array.from(textLayerDiv.querySelectorAll('span'));
-
-    // Find the word boundary within the tapped span's text
-    const spanText = el.textContent || '';
-    if (!spanText.trim()) return;
-
-    // Select the whole tapped span as the initial word, then expand to
-    // adjacent spans that are on the same line (same top ± 2px)
-    const tapRect  = el.getBoundingClientRect();
-    const tapTop   = tapRect.top;
-
-    // Gather spans on the same visual line
-    const lineSpans = allSpans.filter(s => {
-      const r = s.getBoundingClientRect();
-      return Math.abs(r.top - tapTop) < 4 && s.textContent.trim();
-    });
-
-    // Sort by left position
-    lineSpans.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
-
-    // Find the index of the tapped span in the line
-    const tapIdx = lineSpans.indexOf(el);
-    if (tapIdx === -1) {
-      // Fallback: just select the tapped span
-      selectSpans([el], clientX, clientY);
-      return;
-    }
-
-    // Expand selection to the full word (spans that are part of the same word)
-    // A "word" ends at a span whose text ends with a space or punctuation
-    let start = tapIdx;
-    let end   = tapIdx;
-
-    // Expand left
-    while (start > 0) {
-      const prev = lineSpans[start - 1].textContent;
-      if (/[\s,.:;!?]$/.test(prev)) break;
-      start--;
-    }
-    // Expand right
-    while (end < lineSpans.length - 1) {
-      const curr = lineSpans[end].textContent;
-      if (/[\s,.:;!?]$/.test(curr)) break;
-      end++;
-    }
-
-    selectSpans(lineSpans.slice(start, end + 1), clientX, clientY);
-  }
-
-  function selectSpans(spans, touchX, touchY) {
-    selectedSpans = spans;
-    selectedText  = spans.map(s => s.textContent).join('').trim();
-    spans.forEach(s => s.classList.add('selected'));
-
-    // Position the copy button above the touch point
-    const btnY = Math.max(touchY - 60, 8);
-    const btnX = Math.min(
-      Math.max(touchX - copyBtn.offsetWidth / 2, 8),
-      window.innerWidth - copyBtn.offsetWidth - 8
-    );
-    copyBtn.style.top     = btnY + 'px';
-    copyBtn.style.left    = btnX + 'px';
-    copyBtn.style.display = 'block';
-  }
-
-  // ── PDF rendering ──────────────────────────────────────────────────────────
   window.loadPdf = async function (fileUrl) {
     window.scrollTo(0, 0);
-    clearSelection();
     loadingEl.style.display = 'block';
     errorEl.style.display   = 'none';
     container.innerHTML     = '';
@@ -295,12 +141,13 @@
         const scale    = viewportWidth / viewport.width;
         const sv       = page.getViewport({ scale });
 
+        // ── Wrapper ──
         const wrapper = document.createElement('div');
         wrapper.className    = 'page-wrapper';
         wrapper.style.width  = sv.width  + 'px';
         wrapper.style.height = sv.height + 'px';
 
-        // Canvas
+        // ── Canvas (hi-DPI) ──
         const canvas = document.createElement('canvas');
         const ctx    = canvas.getContext('2d');
         canvas.width  = Math.floor(sv.width  * dpr);
@@ -312,9 +159,9 @@
           viewport: page.getViewport({ scale: scale * dpr }),
         }).promise;
 
-        // Text layer
-        // pdf.js v4 TextLayer sizes the container via CSS var(--scale-factor).
-        // Without it the layer renders at scale 0 → all spans appear tiny.
+        // ── Text layer ──
+        // pdf.js v4 TextLayer uses CSS var(--scale-factor) to size the container.
+        // Must be set before render() or all spans appear at the wrong scale.
         const textLayerDiv = document.createElement('div');
         textLayerDiv.className = 'textLayer';
         textLayerDiv.style.setProperty('--scale-factor', String(scale));
@@ -327,8 +174,6 @@
         });
         await textLayer.render();
 
-        attachLongPress(textLayerDiv);
-
         wrapper.appendChild(canvas);
         wrapper.appendChild(textLayerDiv);
         container.appendChild(wrapper);
@@ -338,16 +183,12 @@
 
     } catch (err) {
       loadingEl.style.display = 'none';
-      showError('Could not open PDF: ' + err.message);
+      errorEl.style.display   = 'block';
+      errorEl.textContent     = 'Could not open PDF: ' + err.message;
       console.error(err);
       if (window.Android) window.Android.onPdfError(err.message || String(err));
     }
   };
-
-  function showError(msg) {
-    errorEl.style.display = 'block';
-    errorEl.textContent   = msg;
-  }
 
   if (window.Android) window.Android.onViewerReady();
 })();
