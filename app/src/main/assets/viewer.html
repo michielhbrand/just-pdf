@@ -145,11 +145,8 @@
   // regardless of scaleX value.
 
   /**
-   * Extract the effective scaleX from a span's inline transform style.
-   * pdf.js sets transform as e.g. "scaleX(1.23) scale(0.5)" or just "scaleX(1.23)".
-   * The scale(1/minFontSize) part is a uniform scale that does NOT affect the
-   * x-fraction calculation (it cancels in numerator/denominator).
-   * We only need scaleX for converting layout-space x-advances to visual-space.
+   * Extract the scaleX value from a span's inline transform style.
+   * pdf.js sets transform as e.g. "scaleX(1.23) scale(0.5)".
    */
   function getSpanScaleX(span) {
     const t = span.style.transform || '';
@@ -158,67 +155,82 @@
   }
 
   /**
+   * Extract the uniform scale() value from a span's inline transform style.
+   * pdf.js adds scale(1/minFontSize) when minFontSize > 1.
+   */
+  function getSpanScale(span) {
+    const t = span.style.transform || '';
+    // Match scale(x) but NOT scaleX(x)
+    const m = t.match(/(?<![A-Za-z])scale\(([\d.eE+\-]+)\)/);
+    return m ? parseFloat(m[1]) : 1;
+  }
+
+  /**
    * Given a span, startOffset, endOffset (character indices into span.textContent),
    * return { x, y, w, h } in page-wrapper-local CSS pixels.
    *
-   * Strategy:
-   *   - span.getBoundingClientRect() gives the visual (post-transform) rect.
-   *   - For partial selections, we need the x-offset of startOff and endOff
-   *     within the span. We compute this using measureText in the span's font,
-   *     but we must use the SAME font size that pdf.js used internally.
+   * IMPORTANT: Android WebView's getBoundingClientRect() does NOT include CSS
+   * transforms — it returns the pre-transform layout rect. Desktop Chromium DOES
+   * include transforms. We must handle both cases.
    *
-   *   pdf.js #layout measures at: fontSize * this.#scale  px
-   *   where fontSize = textDivProperties.fontSize (= fontHeight, the raw value)
-   *   and this.#scale = viewport.scale * dpr = (scale/dpr)*dpr = scale.
+   * We detect which case we're in by comparing BCR width to offsetWidth:
+   *   - If BCR.width ≈ offsetWidth * scaleX * scale → transforms ARE included (desktop)
+   *   - If BCR.width ≈ offsetWidth → transforms are NOT included (Android WebView)
    *
-   *   getComputedStyle(span).fontSize resolves to: scale * minFontSize * fontHeight px
-   *   (because divStyle.fontSize = calc(var(--scale-factor) * minFontSize * fontHeight px))
+   * Then we compute the visual rect accordingly:
+   *   visualLeft  = BCR.left  (correct in both cases: transform-origin is 0% 0%)
+   *   visualWidth = BCR.width * scaleX * scale  (if transforms not included)
+   *               = BCR.width                   (if transforms already included)
+   *   visualHeight = BCR.height * scale         (if transforms not included)
+   *                = BCR.height                 (if transforms already included)
    *
-   *   So getComputedStyle gives a font size that is minFontSize× too large.
-   *   BUT since we only use measureText for ratios (startW/fullW), the font size
-   *   cancels out — any consistent font size gives the same ratio.
-   *
-   *   The remaining issue: the browser may render the span with a DIFFERENT
-   *   effective font size due to the scale(1/minFontSize) transform. The layout
-   *   box width (pre-scaleX) = measureText(text, fontSize*minFontSize) / scaleX_internal.
-   *   The visual width = layout_width * scaleX (from getBCR).
-   *
-   *   So: visual_x_at_char_n = vr.left + (measureText(text[0..n]) / measureText(text)) * vr.width
-   *   This is correct as long as measureText ratios match the browser's rendering ratios,
-   *   which holds when using the same font family and any consistent size.
+   * For partial selections, measureText fractions are applied to the visual width.
    */
   function spanRect(span, startOff, endOff, wrapperRect) {
     const text  = span.textContent;
     const total = text.length;
     if (total === 0 || startOff >= endOff) return null;
 
-    // Visual bounding rect of the entire span (post-transform, viewport coords).
     const vr = span.getBoundingClientRect();
     if (vr.width === 0 || vr.height === 0) return null;
+
+    const sx    = getSpanScaleX(span);   // horizontal stretch (e.g. 1.23)
+    const sc    = getSpanScale(span);    // uniform scale (e.g. 0.5 = 1/minFontSize)
+
+    // Detect whether BCR already includes transforms.
+    // offsetWidth is the pre-transform layout width in CSS px.
+    // If BCR.width ≈ offsetWidth, transforms are NOT included.
+    // If BCR.width ≈ offsetWidth * sx * sc, transforms ARE included.
+    const layoutW = span.offsetWidth;
+    const expectedVisualW = layoutW * sx * sc;
+    const transformsIncluded = Math.abs(vr.width - expectedVisualW) < Math.abs(vr.width - layoutW);
+
+    const visualW = transformsIncluded ? vr.width : expectedVisualW;
+    const visualH = transformsIncluded ? vr.height : vr.height * sc;
 
     const x0 = vr.left - wrapperRect.left;
     const y0 = vr.top  - wrapperRect.top;
 
     // Full span selected — use the entire visual rect.
     if (startOff === 0 && endOff === total) {
-      return { x: x0, y: y0, w: vr.width, h: vr.height };
+      return { x: x0, y: y0, w: visualW, h: visualH };
     }
 
     // Partial selection: compute x-fractions via measureText.
-    // Use the span's computed font (any consistent size works for ratios).
+    // Any consistent font size works since we only use ratios.
     const cs = window.getComputedStyle(span);
     measureCtx.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
 
     const fullW  = measureCtx.measureText(text).width;
-    if (fullW <= 0) return { x: x0, y: y0, w: vr.width, h: vr.height };
+    if (fullW <= 0) return { x: x0, y: y0, w: visualW, h: visualH };
 
     const startW = startOff > 0 ? measureCtx.measureText(text.slice(0, startOff)).width : 0;
     const endW   = endOff < total ? measureCtx.measureText(text.slice(0, endOff)).width : fullW;
 
-    const xStart = x0 + (startW / fullW) * vr.width;
-    const xEnd   = x0 + (endW   / fullW) * vr.width;
+    const xStart = x0 + (startW / fullW) * visualW;
+    const xEnd   = x0 + (endW   / fullW) * visualW;
 
-    return { x: xStart, y: y0, w: xEnd - xStart, h: vr.height };
+    return { x: xStart, y: y0, w: xEnd - xStart, h: visualH };
   }
 
   function clearHighlights() {

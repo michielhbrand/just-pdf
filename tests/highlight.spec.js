@@ -22,7 +22,7 @@
 const { test, expect } = require('@playwright/test');
 
 const VIEWER_URL = '/viewer.html';
-const PDF_URL    = 'http://localhost:8080/test.pdf';
+const PDF_URL    = 'http://localhost:8080/example-pdf.pdf';
 const TOLERANCE  = 8; // px — acceptable edge misalignment
 
 // Minimum span width to test (skip very narrow spans like punctuation)
