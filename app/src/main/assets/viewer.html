@@ -174,31 +174,38 @@
         });
         await textLayer.render();
 
-        // Fix span hit-test boxes so selection handles land on word boundaries.
+        // Fix selection highlight alignment.
         //
-        // pdf.js applies a CSS scaleX() transform to each span to stretch it to match
-        // the canvas-rendered text width. scaleX changes the visual size but NOT the
-        // layout box — the browser places selection handles at the visual edges, but
-        // touch targets use the layout box. When scaleX != 1 these diverge.
+        // pdf.js applies scaleX() to each span to stretch it to match the canvas text
+        // width. The ::selection highlight covers the span's layout box (pre-scaleX),
+        // not the visual glyph positions (post-scaleX). When scaleX != 1 the highlight
+        // doesn't align with the visible text.
         //
-        // Fix: for every span that has a scaleX transform, measure its actual rendered
-        // width via getBoundingClientRect(), then set that as an explicit CSS width and
-        // remove the scaleX so layout box == visual bounds == correct touch target.
+        // Fix: set each span's width to item.width * scale (the exact canvas text width
+        // in CSS pixels, from the PDF geometry) and remove scaleX so the layout box
+        // matches the canvas rendering exactly.
         //
-        // We must append the div to the DOM first so getBoundingClientRect() works.
+        // Mapping: TextLayer creates one <span> per item where item.str !== ''.
+        // Items with str==='' are skipped (no span). EOL items get a <br> but no span.
+        const spans = Array.from(textLayerDiv.querySelectorAll('span'));
+        let si = 0;
+        for (const item of textContent.items) {
+          if (si >= spans.length) break;
+          // Skip items that produce no span
+          if (!item.str || item.str === '') continue;
+          const span = spans[si++];
+          const pdfW = Math.abs(item.width);
+          if (pdfW > 0) {
+            const cssW = pdfW * scale;
+            const t = span.style.transform || '';
+            span.style.transform = t.replace(/scaleX\([^)]*\)\s*/g, '').trim();
+            span.style.width = cssW + 'px';
+          }
+        }
+
         wrapper.appendChild(canvas);
         wrapper.appendChild(textLayerDiv);
         container.appendChild(wrapper);
-
-        for (const span of textLayerDiv.querySelectorAll('span')) {
-          const t = span.style.transform;
-          if (!t || !t.includes('scaleX')) continue;
-          const visualWidth = span.getBoundingClientRect().width;
-          if (visualWidth > 0) {
-            span.style.width = visualWidth + 'px';
-            span.style.transform = t.replace(/scaleX\([^)]*\)\s*/g, '').trim();
-          }
-        }
       }
 
       if (window.Android) window.Android.onPdfLoaded(pdf.numPages);
