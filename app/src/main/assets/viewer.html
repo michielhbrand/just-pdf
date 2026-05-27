@@ -162,42 +162,43 @@
         }).promise;
 
         // ── Text layer ──
-        // pdf.js v4 TextLayer constructor does:
-        //   this.#scale = viewport.scale * devicePixelRatio
-        // and uses #scale to compute scaleX for each span via ctx.measureText().
-        // ctx.measureText() returns CSS pixels, so the correct #scale for CSS-pixel
-        // accuracy is just viewport.scale (no DPR). We temporarily set devicePixelRatio=1
-        // so the TextLayer measures text at the right size, giving accurate scaleX values
-        // that match the canvas-rendered text widths.
         const textLayerDiv = document.createElement('div');
         textLayerDiv.className = 'textLayer';
         textLayerDiv.style.setProperty('--scale-factor', String(scale));
 
         const textContent = await page.getTextContent();
+        const textLayer   = new pdfjsLib.TextLayer({
+          textContentSource: textContent,
+          container: textLayerDiv,
+          viewport: sv,
+        });
+        await textLayer.render();
 
-        // Temporarily override devicePixelRatio so TextLayer's #scale = viewport.scale * 1
-        const savedDpr = Object.getOwnPropertyDescriptor(window, 'devicePixelRatio');
-        Object.defineProperty(window, 'devicePixelRatio', { value: 1, configurable: true });
-        let textLayer;
-        try {
-          textLayer = new pdfjsLib.TextLayer({
-            textContentSource: textContent,
-            container: textLayerDiv,
-            viewport: sv,
-          });
-          await textLayer.render();
-        } finally {
-          // Restore original devicePixelRatio
-          if (savedDpr) {
-            Object.defineProperty(window, 'devicePixelRatio', savedDpr);
-          } else {
-            delete window.devicePixelRatio;
-          }
-        }
-
+        // Fix span hit-test boxes so selection handles land on word boundaries.
+        //
+        // pdf.js applies a CSS scaleX() transform to each span to stretch it to match
+        // the canvas-rendered text width. scaleX changes the visual size but NOT the
+        // layout box — the browser places selection handles at the visual edges, but
+        // touch targets use the layout box. When scaleX != 1 these diverge.
+        //
+        // Fix: for every span that has a scaleX transform, measure its actual rendered
+        // width via getBoundingClientRect(), then set that as an explicit CSS width and
+        // remove the scaleX so layout box == visual bounds == correct touch target.
+        //
+        // We must append the div to the DOM first so getBoundingClientRect() works.
         wrapper.appendChild(canvas);
         wrapper.appendChild(textLayerDiv);
         container.appendChild(wrapper);
+
+        for (const span of textLayerDiv.querySelectorAll('span')) {
+          const t = span.style.transform;
+          if (!t || !t.includes('scaleX')) continue;
+          const visualWidth = span.getBoundingClientRect().width;
+          if (visualWidth > 0) {
+            span.style.width = visualWidth + 'px';
+            span.style.transform = t.replace(/scaleX\([^)]*\)\s*/g, '').trim();
+          }
+        }
       }
 
       if (window.Android) window.Android.onPdfLoaded(pdf.numPages);
