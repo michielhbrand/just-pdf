@@ -72,10 +72,19 @@
     user-select: text;
   }
 
-  /* Native selection highlight */
+  /* Suppress the native ::selection highlight — we draw our own on canvas */
   .textLayer span::selection {
-    background: rgba(0, 120, 255, 0.35);
+    background: transparent;
     color: transparent;
+  }
+
+  /* ── Highlight overlay canvas ── */
+  .highlightLayer {
+    position: absolute;
+    top: 0;
+    left: 0;
+    pointer-events: none;
+    z-index: 3;
   }
 
   /* ── Loading / error ── */
@@ -119,11 +128,74 @@
   const loadingEl = document.getElementById('loading');
   const errorEl   = document.getElementById('error');
 
+  // Array of { canvas, ctx } for each page's highlight overlay.
+  // Rebuilt every time a new PDF is loaded.
+  const highlightLayers = [];
+
+  // ── Canvas-drawn selection highlight ──────────────────────────────────────
+  // We suppress the native ::selection background and instead draw blue
+  // rectangles on a per-page overlay canvas.  Range.getClientRects() returns
+  // the *actual* visual bounding boxes (post-scaleX transform), so the
+  // highlight aligns perfectly with the rendered text.
+
+  const HIGHLIGHT_COLOR = 'rgba(0, 120, 255, 0.35)';
+
+  function clearHighlights() {
+    for (const { canvas, ctx } of highlightLayers) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+  }
+
+  function drawHighlight() {
+    clearHighlights();
+
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
+
+    const range = sel.getRangeAt(0);
+    const rects = range.getClientRects();
+    if (!rects || rects.length === 0) return;
+
+    for (const { canvas, ctx } of highlightLayers) {
+      // Get the canvas's position in the viewport (CSS pixels).
+      const canvasRect = canvas.getBoundingClientRect();
+
+      // The canvas logical size equals its CSS size (1:1 mapping).
+      // We draw directly in CSS-pixel coordinates.
+      let drew = false;
+      for (const r of rects) {
+        // Only draw rects that overlap this canvas.
+        if (r.right  < canvasRect.left   ||
+            r.left   > canvasRect.right  ||
+            r.bottom < canvasRect.top    ||
+            r.top    > canvasRect.bottom) {
+          continue;
+        }
+        // Translate from viewport coords to canvas-local coords.
+        const x = r.left   - canvasRect.left;
+        const y = r.top    - canvasRect.top;
+        const w = r.width;
+        const h = r.height;
+        if (!drew) {
+          ctx.fillStyle = HIGHLIGHT_COLOR;
+          drew = true;
+        }
+        ctx.fillRect(x, y, w, h);
+      }
+    }
+  }
+
+  // Listen for selection changes on the whole document.
+  document.addEventListener('selectionchange', drawHighlight);
+
+  // ─────────────────────────────────────────────────────────────────────────
+
   window.loadPdf = async function (fileUrl) {
     window.scrollTo(0, 0);
     loadingEl.style.display = 'block';
     errorEl.style.display   = 'none';
     container.innerHTML     = '';
+    highlightLayers.length  = 0;   // clear previous page canvases
 
     try {
       const pdf = await pdfjsLib.getDocument({
@@ -149,7 +221,7 @@
         wrapper.style.width  = sv.width  + 'px';
         wrapper.style.height = sv.height + 'px';
 
-        // ── Canvas (hi-DPI) ──
+        // ── PDF canvas (hi-DPI) ──
         const canvas = document.createElement('canvas');
         const ctx    = canvas.getContext('2d');
         canvas.width  = Math.floor(sv.width  * dpr);
@@ -180,8 +252,22 @@
         });
         await textLayer.render();
 
+        // ── Highlight overlay canvas (CSS-pixel size, 1:1) ──
+        // We intentionally do NOT multiply by dpr here: the canvas coordinate
+        // space must match the CSS-pixel coordinates returned by getClientRects().
+        const hlCanvas = document.createElement('canvas');
+        hlCanvas.className    = 'highlightLayer';
+        hlCanvas.width        = Math.floor(sv.width);
+        hlCanvas.height       = Math.floor(sv.height);
+        hlCanvas.style.width  = sv.width  + 'px';
+        hlCanvas.style.height = sv.height + 'px';
+        const hlCtx = hlCanvas.getContext('2d');
+
+        highlightLayers.push({ canvas: hlCanvas, ctx: hlCtx });
+
         wrapper.appendChild(canvas);
         wrapper.appendChild(textLayerDiv);
+        wrapper.appendChild(hlCanvas);
         container.appendChild(wrapper);
       }
 
