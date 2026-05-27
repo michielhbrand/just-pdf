@@ -252,36 +252,15 @@
     const ctx = hlCanvas.getContext('2d');
     ctx.fillStyle = HIGHLIGHT_COLOR;
 
-    // Walk text nodes in document order and collect those inside the range.
-    // We use the Range API directly: a node is inside the range if
-    //   range.comparePoint(node, 0) <= 0  AND  range.comparePoint(node, node.length) >= 0
-    // but comparePoint isn't available everywhere, so we use compareBoundaryPoints.
+    // Walk all text nodes in the textLayer and draw rects for those that
+    // fall within the selection range.
+    // range.intersectsNode() tells us if a node overlaps the range at all.
+    // Then we clamp offsets to the range boundaries.
     const walker = document.createTreeWalker(textLayer, NodeFilter.SHOW_TEXT, null);
     let node;
-    let started = false;
     while ((node = walker.nextNode())) {
-      // Check if this node is the range start container or comes after it.
-      if (!started) {
-        if (node === range.startContainer) {
-          started = true;
-        } else {
-          // Is this node after the start container in document order?
-          const pos = range.startContainer.compareDocumentPosition(node);
-          if (pos & Node.DOCUMENT_POSITION_FOLLOWING) {
-            started = true;
-          } else {
-            continue;
-          }
-        }
-      }
-
-      // Check if we've passed the range end.
-      if (node !== range.endContainer) {
-        const pos = range.endContainer.compareDocumentPosition(node);
-        if (pos & Node.DOCUMENT_POSITION_PRECEDING) {
-          break; // node is after endContainer
-        }
-      }
+      // Skip nodes that don't overlap the range.
+      if (!range.intersectsNode(node)) continue;
 
       const span = node.parentElement;
       if (!span) continue;
