@@ -144,8 +144,14 @@
   // This avoids all the percentage/calc parsing issues and works correctly
   // regardless of scaleX value.
 
-  /** Extract scaleX from a span's computed transform. */
-  function getScaleX(span) {
+  /**
+   * Extract the effective scaleX from a span's inline transform style.
+   * pdf.js sets transform as e.g. "scaleX(1.23) scale(0.5)" or just "scaleX(1.23)".
+   * The scale(1/minFontSize) part is a uniform scale that does NOT affect the
+   * x-fraction calculation (it cancels in numerator/denominator).
+   * We only need scaleX for converting layout-space x-advances to visual-space.
+   */
+  function getSpanScaleX(span) {
     const t = span.style.transform || '';
     const m = t.match(/scaleX\(([\d.eE+\-]+)\)/);
     return m ? parseFloat(m[1]) : 1;
@@ -155,49 +161,64 @@
    * Given a span, startOffset, endOffset (character indices into span.textContent),
    * return { x, y, w, h } in page-wrapper-local CSS pixels.
    *
-   * Uses span.getBoundingClientRect() for the visual bounds (post-scaleX),
-   * then measureText fractions for partial selections.
+   * Strategy:
+   *   - span.getBoundingClientRect() gives the visual (post-transform) rect.
+   *   - For partial selections, we need the x-offset of startOff and endOff
+   *     within the span. We compute this using measureText in the span's font,
+   *     but we must use the SAME font size that pdf.js used internally.
+   *
+   *   pdf.js #layout measures at: fontSize * this.#scale  px
+   *   where fontSize = textDivProperties.fontSize (= fontHeight, the raw value)
+   *   and this.#scale = viewport.scale * dpr = (scale/dpr)*dpr = scale.
+   *
+   *   getComputedStyle(span).fontSize resolves to: scale * minFontSize * fontHeight px
+   *   (because divStyle.fontSize = calc(var(--scale-factor) * minFontSize * fontHeight px))
+   *
+   *   So getComputedStyle gives a font size that is minFontSize× too large.
+   *   BUT since we only use measureText for ratios (startW/fullW), the font size
+   *   cancels out — any consistent font size gives the same ratio.
+   *
+   *   The remaining issue: the browser may render the span with a DIFFERENT
+   *   effective font size due to the scale(1/minFontSize) transform. The layout
+   *   box width (pre-scaleX) = measureText(text, fontSize*minFontSize) / scaleX_internal.
+   *   The visual width = layout_width * scaleX (from getBCR).
+   *
+   *   So: visual_x_at_char_n = vr.left + (measureText(text[0..n]) / measureText(text)) * vr.width
+   *   This is correct as long as measureText ratios match the browser's rendering ratios,
+   *   which holds when using the same font family and any consistent size.
    */
   function spanRect(span, startOff, endOff, wrapperRect) {
     const text  = span.textContent;
     const total = text.length;
     if (total === 0 || startOff >= endOff) return null;
 
-    // Visual bounding rect of the entire span (post-scaleX, viewport coords).
+    // Visual bounding rect of the entire span (post-transform, viewport coords).
     const vr = span.getBoundingClientRect();
     if (vr.width === 0 || vr.height === 0) return null;
 
-    // If the selection covers the whole span, use the full visual rect.
+    const x0 = vr.left - wrapperRect.left;
+    const y0 = vr.top  - wrapperRect.top;
+
+    // Full span selected — use the entire visual rect.
     if (startOff === 0 && endOff === total) {
-      return {
-        x: vr.left   - wrapperRect.left,
-        y: vr.top    - wrapperRect.top,
-        w: vr.width,
-        h: vr.height,
-      };
+      return { x: x0, y: y0, w: vr.width, h: vr.height };
     }
 
-    // Partial selection: compute fractional x-positions within the span.
-    // We measure with the span's computed font so calc() is resolved.
-    const cs   = window.getComputedStyle(span);
-    measureCtx.font = cs.font;
+    // Partial selection: compute x-fractions via measureText.
+    // Use the span's computed font (any consistent size works for ratios).
+    const cs = window.getComputedStyle(span);
+    measureCtx.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
 
-    const fullW   = measureCtx.measureText(text).width;
-    if (fullW === 0) return null;
+    const fullW  = measureCtx.measureText(text).width;
+    if (fullW <= 0) return { x: x0, y: y0, w: vr.width, h: vr.height };
 
-    const startW  = measureCtx.measureText(text.slice(0, startOff)).width;
-    const endW    = measureCtx.measureText(text.slice(0, endOff)).width;
+    const startW = startOff > 0 ? measureCtx.measureText(text.slice(0, startOff)).width : 0;
+    const endW   = endOff < total ? measureCtx.measureText(text.slice(0, endOff)).width : fullW;
 
-    // Map measured fractions onto the visual width.
-    const xFracStart = startW / fullW;
-    const xFracEnd   = endW   / fullW;
+    const xStart = x0 + (startW / fullW) * vr.width;
+    const xEnd   = x0 + (endW   / fullW) * vr.width;
 
-    return {
-      x: vr.left - wrapperRect.left + xFracStart * vr.width,
-      y: vr.top  - wrapperRect.top,
-      w: (xFracEnd - xFracStart) * vr.width,
-      h: vr.height,
-    };
+    return { x: xStart, y: y0, w: xEnd - xStart, h: vr.height };
   }
 
   function clearHighlights() {
@@ -215,7 +236,7 @@
 
     const range = sel.getRangeAt(0);
 
-    // Find the textLayer that contains the selection start.
+    // Find the textLayer containing the selection start.
     const startNode = range.startContainer;
     const startEl   = startNode.nodeType === Node.TEXT_NODE
       ? startNode.parentElement : startNode;
@@ -231,23 +252,35 @@
     const ctx = hlCanvas.getContext('2d');
     ctx.fillStyle = HIGHLIGHT_COLOR;
 
-    // Walk all text nodes within the textLayer that intersect the range.
+    // Walk text nodes in document order and collect those inside the range.
+    // We use the Range API directly: a node is inside the range if
+    //   range.comparePoint(node, 0) <= 0  AND  range.comparePoint(node, node.length) >= 0
+    // but comparePoint isn't available everywhere, so we use compareBoundaryPoints.
     const walker = document.createTreeWalker(textLayer, NodeFilter.SHOW_TEXT, null);
     let node;
+    let started = false;
     while ((node = walker.nextNode())) {
-      // Skip nodes entirely before the range start.
-      if (node === range.startContainer
-          ? false
-          : range.startContainer.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_PRECEDING) {
-        // node comes before startContainer — skip unless it IS startContainer
-        if (node !== range.startContainer) continue;
+      // Check if this node is the range start container or comes after it.
+      if (!started) {
+        if (node === range.startContainer) {
+          started = true;
+        } else {
+          // Is this node after the start container in document order?
+          const pos = range.startContainer.compareDocumentPosition(node);
+          if (pos & Node.DOCUMENT_POSITION_FOLLOWING) {
+            started = true;
+          } else {
+            continue;
+          }
+        }
       }
 
-      // Stop after the range end.
-      if (node === range.endContainer
-          ? false
-          : range.endContainer.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING) {
-        break;
+      // Check if we've passed the range end.
+      if (node !== range.endContainer) {
+        const pos = range.endContainer.compareDocumentPosition(node);
+        if (pos & Node.DOCUMENT_POSITION_PRECEDING) {
+          break; // node is after endContainer
+        }
       }
 
       const span = node.parentElement;
