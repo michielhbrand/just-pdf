@@ -162,57 +162,23 @@
         }).promise;
 
         // ── Text layer ──
+        // Pass viewport.scale = scale/dpr to TextLayer so its internal
+        // this.#scale = (scale/dpr)*dpr = scale (correct for CSS-pixel measurements).
+        // This gives accurate scaleX values matching the canvas-rendered text widths.
+        // We still set --scale-factor = scale manually so setLayerDimensions sizes
+        // the container correctly at scale * pageWidth CSS pixels.
         const textLayerDiv = document.createElement('div');
         textLayerDiv.className = 'textLayer';
         textLayerDiv.style.setProperty('--scale-factor', String(scale));
 
-        const textContent = await page.getTextContent();
-        const textLayer   = new pdfjsLib.TextLayer({
+        const textContent  = await page.getTextContent();
+        const textLayerVp  = page.getViewport({ scale: scale / dpr });
+        const textLayer    = new pdfjsLib.TextLayer({
           textContentSource: textContent,
           container: textLayerDiv,
-          viewport: sv,
+          viewport: textLayerVp,
         });
         await textLayer.render();
-
-        // Fix selection highlight alignment.
-        //
-        // pdf.js applies scaleX() to stretch the browser font to match the PDF canvas
-        // text width. CSS transform does NOT affect the layout box, so ::selection
-        // highlights the pre-transform layout box — which is narrower than the visual
-        // text when scaleX > 1. This causes the highlight to appear too narrow/shifted.
-        //
-        // Fix: replace scaleX with letter-spacing so the browser text naturally fills
-        // item.width * scale CSS pixels. With scaleX=1, layout box == visual bounds.
-        //
-        // letter-spacing = (targetWidth - naturalWidth) / charCount
-        // naturalWidth = targetWidth / scaleX  (since scaleX = targetWidth / naturalWidth)
-        // letter-spacing = targetWidth * (1 - 1/scaleX) / charCount
-        //
-        // Mapping: TextLayer creates one <span> per item where item.str !== ''.
-        const spans = Array.from(textLayerDiv.querySelectorAll('span'));
-        let si = 0;
-        for (const item of textContent.items) {
-          if (si >= spans.length) break;
-          if (!item.str || item.str === '') continue;
-          const span = spans[si++];
-          const pdfW = Math.abs(item.width);
-          if (pdfW <= 0) continue;
-          const targetW = pdfW * scale;
-          const t = span.style.transform || '';
-          const scaleXMatch = t.match(/scaleX\(([\d.e+-]+)\)/);
-          if (scaleXMatch) {
-            const sx = parseFloat(scaleXMatch[1]);
-            if (sx > 0 && sx !== 1) {
-              const charCount = item.str.length;
-              const letterSpacing = charCount > 0
-                ? targetW * (1 - 1 / sx) / charCount
-                : 0;
-              span.style.transform = t.replace(/scaleX\([^)]*\)\s*/g, '').trim();
-              span.style.letterSpacing = letterSpacing + 'px';
-            }
-          }
-          span.style.width = targetW + 'px';
-        }
 
         wrapper.appendChild(canvas);
         wrapper.appendChild(textLayerDiv);
