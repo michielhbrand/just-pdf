@@ -49,8 +49,10 @@
   /* ── Text layer ── */
   .textLayer {
     position: absolute;
-    top: 0; left: 0; right: 0; bottom: 0;
-    overflow: hidden;
+    top: 0;
+    left: 0;
+    /* width/height are set by pdf.js setLayerDimensions via --scale-factor */
+    overflow: visible;
     line-height: 1;
     z-index: 2;
     pointer-events: auto;
@@ -160,17 +162,24 @@
         }).promise;
 
         // ── Text layer ──
-        // pdf.js v4 TextLayer uses CSS var(--scale-factor) to size the container.
-        // Must be set before render() or all spans appear at the wrong scale.
+        // pdf.js v4 TextLayer internally computes:
+        //   this.#scale = viewport.scale * devicePixelRatio
+        // and uses #scale to compute scaleX for each span (stretching from left edge).
+        // If we pass sv (scale=scale) the internal #scale = scale * dpr, which makes
+        // scaleX dpr× too large → spans stretch too far right → selection offset.
+        // Fix: pass a viewport with scale = scale/dpr so #scale = (scale/dpr)*dpr = scale,
+        // giving correct CSS-pixel measurements. We still set --scale-factor = scale
+        // manually so setLayerDimensions sizes the container correctly.
         const textLayerDiv = document.createElement('div');
         textLayerDiv.className = 'textLayer';
         textLayerDiv.style.setProperty('--scale-factor', String(scale));
 
-        const textContent = await page.getTextContent();
-        const textLayer   = new pdfjsLib.TextLayer({
+        const textContent  = await page.getTextContent();
+        const textLayerVp  = page.getViewport({ scale: scale / dpr });
+        const textLayer    = new pdfjsLib.TextLayer({
           textContentSource: textContent,
           container: textLayerDiv,
-          viewport: sv,
+          viewport: textLayerVp,
         });
         await textLayer.render();
 
